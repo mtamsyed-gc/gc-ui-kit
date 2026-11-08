@@ -1,4 +1,4 @@
-"""GC UI kit server 1.0.2 — the local browser server every GC tool page runs on (UI_STANDARD §2).
+"""GC UI kit server 1.0.3 — the local browser server every GC tool page runs on (UI_STANDARD §2).
 
 Standard library only (openpyxl is imported only when a workbook is read or saved). Python 3.12+. Windows first; runs
 on Linux / macOS for tests.
@@ -48,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.0.2"
+KIT_VERSION = "1.0.3"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -160,6 +160,8 @@ class Tool:
         self.roots = [self.client / r for r in self.m.get("allowed_roots", ["."])]
         self.state_dir = self.client / self.m.get("state_dir", "ui_state")
         self._plugin = None
+        self._meta = {}                 # (workbook path, mtime) -> {sheet: meta}: validations need a full load (slow)
+        self._meta_lock = threading.Lock()
 
     # ---- paths
     def rel(self, p: Path) -> str:
@@ -298,6 +300,38 @@ class Tool:
                     out.append(str(v))
         return out
 
+    def workbook_meta(self, wid: str) -> dict:
+        """{sheet: meta} for an editable workbook, from one full openpyxl load per (path, mtime); cached. A large
+        reference sheet (100k rows) makes the full load slow, so rows are read in read-only mode (sheet()) and the
+        meta is warmed in the background at start (warm_meta)."""
+        from openpyxl import load_workbook
+        w, p = self.workbook(wid)
+        key = (str(p), mtime(p))
+        with self._meta_lock:
+            if key in self._meta:
+                return self._meta[key]
+        wb = load_workbook(p)
+        out = {}
+        for ws in wb.worksheets:
+            try:
+                out[ws.title] = self.sheet_meta(wb, ws, w)
+            except Exception:  # noqa: BLE001
+                out[ws.title] = {"header_row": int(w.get("header_row", 1)), "columns": [], "ncol": 0}
+        wb.close()
+        with self._meta_lock:
+            self._meta[key] = out
+            for k in [k for k in self._meta if k[0] == str(p) and k != key]:
+                del self._meta[k]
+        return out
+
+    def warm_meta(self):
+        for wid in self.workbooks():
+            try:
+                if self.path(self.workbooks()[wid]["path"]).exists():
+                    self.workbook_meta(wid)
+            except Exception:  # noqa: BLE001
+                pass
+
     def workbook_info(self, wid: str) -> dict:
         from openpyxl import load_workbook
         w, p = self.workbook(wid)
@@ -323,17 +357,19 @@ class Tool:
         w, p = self.workbook(wid)
         if not p.exists():
             raise ValueError("workbook not found")
-        wb = load_workbook(p, read_only=False, data_only=False)
-        if sheet not in wb.sheetnames or sheet in set(w.get("hidden_sheets", [])):
-            wb.close()
+        metas = self.workbook_meta(wid)
+        if sheet not in metas or sheet in set(w.get("hidden_sheets", [])):
             raise ValueError(f"no sheet {sheet}")
-        ws = wb[sheet]
-        meta = self.sheet_meta(wb, ws, w)
+        meta = metas[sheet]
         hr, ncol = meta["header_row"], meta["ncol"]
+        wb = load_workbook(p, read_only=True, data_only=False)
+        ws = wb[sheet]
         rows, n, ql = [], 0, q.lower()
-        max_scan = min(ws.max_row or hr, hr + int(w.get("max_rows", 20000)))
-        for r in range(hr + 1, max_scan + 1):
-            vals = [cell_value(ws.cell(row=r, column=c).value) for c in range(1, ncol + 1)]
+        max_scan = hr + int(w.get("max_rows", 20000))
+        r = hr
+        for row in ws.iter_rows(min_row=hr + 1, max_row=max_scan, max_col=ncol, values_only=True):
+            r += 1
+            vals = [cell_value(v) for v in row] + [None] * (ncol - len(row))
             if all(v is None or v == "" for v in vals):
                 continue
             if ql and ql not in " ".join("" if v is None else str(v) for v in vals).lower():
@@ -341,11 +377,12 @@ class Tool:
             n += 1
             if n > offset and len(rows) < limit:
                 rows.append({"r": r, "v": vals})
+        last = ws.max_row
         wb.close()
         return {"id": wid, "sheet": sheet, "path": self.rel(p), "mtime": fmt_t(mtime(p)), "mtime_ts": mtime(p),
                 "in_use": file_in_use(p), "readonly": sheet in set(w.get("readonly_sheets", [])),
                 "columns": meta["columns"], "header_row": hr, "rows": rows, "n_rows": n, "offset": offset,
-                "truncated": n > offset + len(rows), "max_row": ws.max_row}
+                "truncated": n > offset + len(rows), "max_row": last}
 
     def save_sheet(self, wid: str, sheet: str, seen_ts, edits: list, appends: list, force=False) -> dict:
         from openpyxl import load_workbook
@@ -359,12 +396,13 @@ class Tool:
         cur = mtime(p)
         if seen_ts and cur and abs(cur - float(seen_ts)) > 1e-6 and not force:
             raise RuntimeError("the workbook changed on disk since the page read it: reload the sheet, then redo the edits")
+        metas = self.workbook_meta(wid)
         wb = load_workbook(p)
         if sheet not in wb.sheetnames:
             wb.close()
             raise ValueError(f"no sheet {sheet}")
         ws = wb[sheet]
-        meta = self.sheet_meta(wb, ws, w)
+        meta = metas.get(sheet) or self.sheet_meta(wb, ws, w)
         locked = {c["col"] for c in meta["columns"] if c["locked"]}
         hr, ncol = meta["header_row"], meta["ncol"]
         changed = 0
@@ -409,6 +447,8 @@ class Tool:
         wb.save(tmp)
         wb.close()
         os.replace(tmp, p)
+        with self._meta_lock:                      # the header and validations did not change: keep the meta
+            self._meta[(str(p), mtime(p))] = metas
         return {"ok": True, "changed": changed, "backup": self.rel(bak), "mtime": fmt_t(mtime(p)), "mtime_ts": mtime(p)}
 
     # ---- LenAI folders (D-UI4)
@@ -887,6 +927,7 @@ class Handler(BaseHTTPRequestHandler):
 def serve(manifest: Path, client: Path, port: int, open_browser: bool, quiet=True, ready=None):
     tool = Tool(manifest, client)
     Handler.tool, Handler.runner, Handler.quiet = tool, Runner(tool), quiet
+    threading.Thread(target=tool.warm_meta, daemon=True).start()      # validations of the editable workbooks
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError:
