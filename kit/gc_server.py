@@ -1,4 +1,4 @@
-"""GC UI kit server 1.0.0 — the local browser server every GC tool page runs on (UI_STANDARD §2).
+"""GC UI kit server 1.0.2 — the local browser server every GC tool page runs on (UI_STANDARD §2).
 
 Standard library only (openpyxl is imported only when a workbook is read or saved). Python 3.12+. Windows first; runs
 on Linux / macOS for tests.
@@ -48,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.0.0"
+KIT_VERSION = "1.0.2"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -427,6 +427,9 @@ class Tool:
                 if a.get("prompt_section"):
                     prompt = _md_section(prompt, a["prompt_section"]) or prompt
         prompt = prompt or a.get("prompt", "")
+        pl = self.plugin()
+        if pl is not None and hasattr(pl, "lenai_prompt"):
+            prompt = pl.lenai_prompt(self, lid, a, prompt)        # the tool fills paths etc. (D-UI4)
         (folder / "PROMPT.md").write_text(prompt, encoding="utf-8")
         att = folder / "ATTACH"
         att.mkdir()
@@ -535,6 +538,17 @@ class Runner:
         spec = a.get("args", {})
         for name, how in spec.items():
             v = args.get(name)
+            if isinstance(how, dict) and how.get("positional"):
+                # a positional slot in the launcher's fixed order; its "none" marker (default "-") when not given
+                if v in (None, "", False):
+                    cmd.append(str(how.get("default", "-")))
+                else:
+                    if how.get("choices") and str(v) not in how["choices"]:
+                        raise ValueError(f"{name}: {v} is not one of {how['choices']}")
+                    if how.get("pattern") and not re.fullmatch(how["pattern"], str(v)):
+                        raise ValueError(f"{name}: {v!r} is not a valid value")
+                    cmd.append(str(v))
+                continue
             if v in (None, "", False):
                 continue
             if isinstance(how, str):
@@ -563,9 +577,23 @@ class Runner:
             rid = f"{stamp()}_{aid}"
             log = t.state_dir / "logs" / f"{rid}.log"
             cwd = t.path(a["cwd"]) if a.get("cwd") else t.client
+            backups = []
+            for rel in a.get("backup_before", []):           # a file the launcher overwrites: keep a copy first (§2.4)
+                src = t.path(rel)
+                if src.exists() and src.is_file() and t.allowed(src):
+                    bdir = src.parent / "_ui_backup"
+                    bdir.mkdir(exist_ok=True)
+                    bak = bdir / f"{src.stem}_{datetime.now():%Y%m%d_%H%M%S_%f}{src.suffix}"
+                    shutil.copy2(src, bak)
+                    backups.append(t.rel(bak))
+                    for o in sorted(bdir.glob(f"{src.stem}_*{src.suffix}"))[:-BACKUPS_KEPT]:
+                        try:
+                            o.unlink()
+                        except OSError:
+                            pass
             st = {"id": rid, "action": aid, "title": a.get("title", aid), "args": args, "command": cmd, "cwd": str(cwd),
                   "started": now(), "started_ts": time.time(), "finished": None, "rc": None,
-                  "log": t.rel(log), "watch": a.get("outputs", [])}
+                  "log": t.rel(log), "watch": a.get("outputs", []), "backups": backups}
             fh = open(log, "w", encoding="utf-8", errors="replace")
             fh.write(f"[{st['started']}] {subprocess.list2cmdline(cmd)}\n")
             fh.flush()

@@ -118,7 +118,9 @@ def make_fake(tmp: Path):
                 "allowed_roots": ["02_Inputs", "01_Info", "out", "docs"], "state_dir": "ui_state", "lenai_dir": "07_LenAI",
                 "watch_files": {"t": "out/csv/t.csv", "missing": "out/none.csv"},
                 "editable_workbooks": {"book": {"path": "02_Inputs/Book.xlsx", "title": "Book", "readonly_sheets": ["Ref"]}},
-                "actions": {"step": {"title": "Step", "command": ["{py}", str(script), "0.05"], "args": {"rc": {"choices": ["0", "1", "2"]}}},
+                "actions": {"step": {"title": "Step", "command": ["{py}", str(script), "0.05"], "args": {"rc": {"choices": ["0", "1", "2"]}},
+                                     "backup_before": ["02_Inputs/Book.xlsx"]},
+                            "pos": {"title": "Pos", "command": ["{py}", str(script), "0"], "args": {"a": {"positional": True, "default": "-"}, "b": {"positional": True, "pattern": "[0-9]+"}}},
                             "slow": {"title": "Slow", "command": ["{py}", str(script), "30"]}},
                 "lenai": {"map": {"title": "Mapping assist", "prompt_file": "docs/guide.md", "prompt_section": "Mapping assist",
                                   "attach": ["02_Inputs/Book.xlsx", "01_Info/none.csv"], "expected_return": "A digest.", "return_to": "02_Inputs"}},
@@ -234,6 +236,7 @@ def test_server():
         lock.unlink()
         baks = list((client / "02_Inputs" / "_ui_backup").glob("Book_*.xlsx"))
         check(len(baks) == 2, f"two backups kept ({len(baks)})")
+        nb = len(baks)
         # open
         st, j = s.post("/api/open", {"path": "02_Inputs/Book.xlsx"})
         check(st == 200 and j["ok"], "open an allowed workbook")
@@ -257,8 +260,14 @@ def test_server():
             if not l["running"]:
                 break
         check(not l["running"] and l["run"]["rc"] == 0 and any("DONE" in x for x in l["lines"]), f"run finished rc 0 with log ({l['run']['rc']})")
+        check(len(list((client / "02_Inputs" / "_ui_backup").glob("Book_*.xlsx"))) == nb + 1 and l["run"]["backups"], "backup_before kept a copy before the run")
         st, j = s.post("/api/run", {"action": "step", "args": {"rc": "9"}})
         check(st == 400 and "not one of" in j["error"], "bad choice argument refused")
+        st, j = s.post("/api/run", {"action": "pos", "args": {"b": "x"}})
+        check(st == 400 and "not a valid value" in j["error"], "positional pattern refused")
+        rn = GS.Runner(GS.Tool(manifest, client))
+        cmd = rn.command(rn.tool.action("pos"), {"b": "12"})
+        check(cmd[-2:] == ["-", "12"], f"positional defaults and order ({cmd[-2:]})")
         st, j = s.post("/api/run", {"action": "nope"})
         check(st == 400, "unknown action refused")
         st, j = s.post("/api/run", {"action": "step", "args": {"rc": "2"}})
