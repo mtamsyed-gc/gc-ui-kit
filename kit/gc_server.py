@@ -1,4 +1,4 @@
-"""GC UI kit server 1.0.3 — the local browser server every GC tool page runs on (UI_STANDARD §2).
+"""GC UI kit server 1.0.4 — the local browser server every GC tool page runs on (UI_STANDARD §2).
 
 Standard library only (openpyxl is imported only when a workbook is read or saved). Python 3.12+. Windows first; runs
 on Linux / macOS for tests.
@@ -48,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.0.3"
+KIT_VERSION = "1.0.4"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -273,11 +273,15 @@ class Tool:
         first = header_row + 1
         for i, name in enumerate(head, 1):
             c = ws.cell(row=first, column=i)
+            hc = ws.cell(row=header_row, column=i)
             fill = (c.fill.fgColor.rgb if c.fill is not None and c.fill.fgColor is not None else None)
             fill = fill if isinstance(fill, str) else None
-            kind = "input" if fill in INPUT_FILLS else "check" if fill in CHECK_FILLS else "text"
+            hfill = (hc.fill.fgColor.rgb if hc.fill is not None and hc.fill.fgColor is not None else None)
+            hfill = hfill if isinstance(hfill, str) else None
+            formula = isinstance(c.value, str) and c.value.startswith("=")
+            # yellow data cell = an input; a red header, a red data cell or a formula = a check / computed column
+            kind = "input" if fill in INPUT_FILLS else "check" if (fill in CHECK_FILLS or hfill in CHECK_FILLS or formula) else "text"
             note = ""
-            hc = ws.cell(row=header_row, column=i)
             if hc.comment is not None:
                 note = str(hc.comment.text or "").strip()
             cols.append({"name": name, "col": i, "kind": kind, "options": dv_opts.get(i, []), "note": note,
