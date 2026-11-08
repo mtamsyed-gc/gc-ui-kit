@@ -122,7 +122,7 @@ window.GC = (function () {
     const body = el("div", { class: "body" }, opts.body || []);
     c.append(head, body);
     c.setStatus = (s, text) => { c.className = c.className.replace(/\bs-\w+/g, "").trim() + " s-" + (s || "none"); pillbox.replaceChildren(pill(s, text)); if ((s === "stop" || s === "flag") && !opts.always) c.classList.add("open"); };
-    c.setBody = (...nodes) => body.replaceChildren(...nodes.flat());
+    c.setBody = (...nodes) => body.replaceChildren(...nodes.flat(Infinity).filter(Boolean));
     c.body = body; c.head = head; c.open = () => c.classList.add("open");
     if (opts.status) c.setStatus(opts.status);
     return c;
@@ -379,7 +379,7 @@ window.GC = (function () {
   const panel = (() => {
     let p;
     const ensure = () => { if (p) return p; p = el("aside", { class: "panel", role: "complementary", "aria-label": "Help", tabindex: "-1" }, el("div", { class: "hd" }, el("span", { id: "panel-title" }, "Help"), el("span", { class: "spacer" }), el("button", { class: "btn sm", type: "button", onclick: () => close(), "aria-label": "Close help" }, "✕")), el("div", { class: "bd", id: "panel-body" })); document.body.append(p); return p; };
-    const open = (title, ...nodes) => { ensure(); $("#panel-title", p).textContent = title; $("#panel-body", p).replaceChildren(...nodes.flat()); p.classList.add("open"); p.focus(); };
+    const open = (title, ...nodes) => { ensure(); $("#panel-title", p).textContent = title; $("#panel-body", p).replaceChildren(...nodes.flat(Infinity).filter(Boolean)); p.classList.add("open"); p.focus(); };
     const close = () => { if (p) p.classList.remove("open"); };
     return { open, close };
   })();
@@ -400,7 +400,7 @@ window.GC = (function () {
     for (const g of glossary) (cats[g.category || "general"] = cats[g.category || "general"] || []).push(g);
     const box = el("div", {});
     const q = el("input", { type: "search", placeholder: "Filter glossary", "aria-label": "Filter glossary", oninput: () => render(q.value) });
-    const render = (f) => { const fl = (f || "").toLowerCase(); dl.replaceChildren(...glossary.filter((g) => !fl || (g.term + " " + g.definition + " " + (g.aliases || []).join(" ")).toLowerCase().includes(fl)).map((g) => [el("dt", { id: "glossary-" + slug(g.term) }, g.term, g.category ? el("span", { class: "muted small" }, " · " + g.category) : null), el("dd", {}, g.definition, g.aliases && g.aliases.length ? el("span", { class: "muted" }, " (also: " + g.aliases.join(", ") + ")") : null)])); };
+    const render = (f) => { const fl = (f || "").toLowerCase(); dl.replaceChildren(...glossary.filter((g) => !fl || (g.term + " " + g.definition + " " + (g.aliases || []).join(" ")).toLowerCase().includes(fl)).flatMap((g) => [el("dt", { id: "glossary-" + slug(g.term) }, g.term, g.category ? el("span", { class: "muted small" }, " · " + g.category) : null), el("dd", {}, g.definition, g.aliases && g.aliases.length ? el("span", { class: "muted" }, " (also: " + g.aliases.join(", ") + ")") : null)])); };
     render("");
     box.append(el("div", { class: "gc-row" }, q, el("span", { class: "muted small" }, glossary.length + " terms")), dl);
     return box;
@@ -434,7 +434,7 @@ window.GC = (function () {
       document.body.append(p); return p;
     };
     const run = (q) => { const ql = q.trim().toLowerCase(); hits = !ql ? [] : indexEntries.filter((e) => (e.label + " " + (e.keywords || "")).toLowerCase().includes(ql)).slice(0, 40); sel = 0; paint(); };
-    const paint = () => { const groups = {}; hits.forEach((h, i) => (groups[h.type] = groups[h.type] || []).push([h, i])); res.replaceChildren(...Object.entries(groups).map(([t, hs]) => [el("div", { class: "grp" }, t), hs.map(([h, i]) => el("a", { href: "#", class: i === sel ? "on" : "", role: "option", "aria-selected": String(i === sel), onclick: (e) => { e.preventDefault(); go(h); } }, h.label, el("span", { class: "k" }, h.anchor ? "#" + h.anchor : t)))])); if (!hits.length && inp.value.trim()) res.replaceChildren(el("div", { class: "grp" }, "no match")); };
+    const paint = () => { const groups = {}; hits.forEach((h, i) => (groups[h.type] = groups[h.type] || []).push([h, i])); res.replaceChildren(...Object.entries(groups).flatMap(([t, hs]) => [el("div", { class: "grp" }, t), ...hs.map(([h, i]) => el("a", { href: "#", class: i === sel ? "on" : "", role: "option", "aria-selected": String(i === sel), onclick: (e) => { e.preventDefault(); go(h); } }, h.label, el("span", { class: "k" }, h.anchor ? "#" + h.anchor : t)))])); if (!hits.length && inp.value.trim()) res.replaceChildren(el("div", { class: "grp" }, "no match")); };
     const go = (h) => { close(); if (h.anchor) { const t = document.getElementById(h.anchor); if (t) { t.scrollIntoView({ block: "start" }); if (t.classList.contains("gc-card")) t.open && t.open(); const f = $("button.toggle, a, input, button", t); if (f) f.focus(); } } else if (h.term) showTerm(h.term); else if (h.doc) showDoc(h.doc, h.label); };
     const open = () => { ensure(); p.classList.add("open"); inp.value = ""; run(""); inp.focus(); };
     const close = () => { if (p) p.classList.remove("open"); };
@@ -479,7 +479,7 @@ window.GC = (function () {
     Object.values(secs).forEach((s) => io.observe(s));
     return {
       sections: secs, main, nav, header,
-      setMeta: (...nodes) => meta.replaceChildren(...nodes),
+      setMeta: (...nodes) => meta.replaceChildren(...nodes.flat(Infinity)),
       setOverall: (s, text) => overall.replaceChildren(pill(s, text)),
       setNavStatus: (id, s) => { const a = $("#nav-" + id); if (a) $(".navpill", a).replaceChildren(s ? pill(s) : ""); },
       setServer: (txt) => ($("#st-server").textContent = txt), setRun: (txt) => ($("#st-run").textContent = txt),
