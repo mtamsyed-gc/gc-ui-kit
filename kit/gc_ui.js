@@ -290,11 +290,12 @@ window.GC = (function () {
       addBtn.disabled = d.readonly; q.disabled = false;
       const colTip = (c) => [c.description || c.note || "", c.required ? "Required." : c.kind === "optional" ? "Optional." : "", c.options && c.options.length ? "Options: " + c.options.join(", ") : "", c.example ? "Example: " + c.example : ""].filter(Boolean).join("\n");
       const th = el("tr", {}, el("th", { scope: "col" }, "#"), cols.map((c) => el("th", { scope: "col", title: colTip(c) }, c.name, c.kind !== "text" ? el("span", { class: "kind" }, c.kind === "input" ? (c.required === false ? "input" : "input") : c.kind === "optional" ? "optional" : "check") : null, colTip(c) ? el("button", { class: "q", type: "button", title: colTip(c), "aria-label": "Help: " + c.name, onclick: () => panel.open(c.name, el("p", { style: "white-space:pre-wrap" }, colTip(c))) }, "?") : null)));
-      const RH = d.rows_help || null, keyIx = RH ? cols.findIndex((c) => c.col === d.key_col) : -1, valIx = RH ? cols.findIndex((c) => c.col === d.value_col) : -1;
+      const RH = d.rows_help || null, keyIx = RH ? cols.findIndex((c) => c.col === d.key_col) : -1;
+      const valIxs = RH ? (d.value_cols || [d.value_col]).map((vc) => cols.findIndex((c) => c.col === vc)) : [], valIx = valIxs.length ? valIxs[0] : -1;
       const cell = (r, ci, c, v, isNew, rowVals) => {
         const key = r + ":" + c.col;
         const cur = edits.has(key) ? edits.get(key) : v;
-        const rh = RH && ci === valIx && keyIx >= 0 ? RH[String(rowVals[keyIx] ?? "")] : null;
+        const rh = RH && valIxs.includes(ci) && keyIx >= 0 ? RH[String(rowVals[keyIx] ?? "")] : null;
         const options = rh && rh.options && rh.options.length ? rh.options : c.options;
         if (c.locked || d.readonly) return el("td", { class: "cell " + (c.kind === "check" ? "check" : ""), title: String(v ?? "") }, isNum(v) ? fmtNum(v) : (v ?? ""));
         const onchange = (ev) => { const nv = ev.target.value; if (isNew) { appends[-r - 1][ci] = nv; } else if (String(nv) === String(v ?? "")) edits.delete(key); else edits.set(key, nv); ev.target.closest("td").classList.toggle("changed", isNew ? nv !== "" : edits.has(key)); if (rh) ev.target.closest("tr").classList.toggle("need", !!rh.required && nv === ""); refreshDirty(); };

@@ -410,7 +410,7 @@ class Tool:
                 extra = pl.sheet_help(self, wid, sheet, out["columns"]) or {}
                 # the tool may refine the columns (description, required, options, example, kind) and add per-row help
                 # (rows_help keyed by the value of key_col, applied to value_col: options, description, required …)
-                for k in ("columns", "rows_help", "key_col", "value_col", "note"):
+                for k in ("columns", "rows_help", "key_col", "value_col", "value_cols", "note"):
                     if k in extra:
                         out[k] = extra[k]
             except Exception as e:  # noqa: BLE001 - help is help, never a reason to fail
