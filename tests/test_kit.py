@@ -134,7 +134,8 @@ def make_fake(tmp: Path):
                             "slow": {"title": "Slow", "command": ["{py}", str(script), "30"]}},
                 "lenai": {"map": {"title": "Mapping assist", "prompt_file": "docs/guide.md", "prompt_section": "Mapping assist",
                                   "attach": ["02_Inputs/Book.xlsx", "01_Info/none.csv"], "expected_return": "A digest.", "return_to": "02_Inputs"}},
-                "glossary": ["kit/common_glossary.json", "glossary.json"]}
+                "glossary": ["kit/common_glossary.json", "glossary.json"], "doc_root": "{ui}/.."}
+    (ui.parent / "KITDOC.md").write_text("# kit doc\n")
     (ui / "fake" / "manifest.json").write_text(json.dumps(manifest))
     return client, ui / "fake" / "manifest.json"
 
@@ -303,6 +304,9 @@ def test_server():
         check(st == 200 and j["exists"] and [x["name"] for x in j["sheets"]] == ["Settings", "Ref"], "discovered workbook served")
         st, j = s.get("/api/state")
         check("disc" in j["workbooks"], "discovered workbook in state")
+        st, b = s.get("/doc/KITDOC.md")
+        check(st == 200 and b"kit doc" in b, "doc served from doc_root")
+        check(s.geterr("/doc/../KITDOC.md")[0] in (400, 404) and s.geterr("/doc/kit/gc_server.py")[0] == 404, "doc_root escape and non-doc refused")
         st, j = s.post("/api/run", {"action": "path", "args": {"f": "02_Inputs/Book.xlsx"}})
         for _ in range(60):
             time.sleep(0.1)

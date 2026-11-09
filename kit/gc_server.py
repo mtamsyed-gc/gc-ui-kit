@@ -161,6 +161,9 @@ class Tool:
         self.ui_dir = self.page_dir.parent
         self.kit_dir = (self.ui_dir / self.m.get("kit", "kit")).resolve()
         self.roots = [self.client / r for r in self.m.get("allowed_roots", ["."])]
+        # 1.2.0: help documents may live with the tool's code rather than in the client folder (doc_root: {ui}, {page})
+        dr = self.m.get("doc_root")
+        self.doc_root = Path(str(dr).format(ui=str(self.ui_dir), page=str(self.page_dir))).resolve() if dr else None
         self.state_dir = self.client / self.m.get("state_dir", "ui_state")
         self._plugin = None
         self._meta = {}                 # (workbook path, mtime) -> {sheet: meta}: validations need a full load (slow)
@@ -195,6 +198,14 @@ class Tool:
             return None
         p = self.path(rel)
         return p if self.allowed(p) else None
+
+    def safe_doc(self, rel: str) -> Path | None:
+        """A help document: under doc_root when the manifest names one (and the file is there), else under the roots."""
+        if self.doc_root is not None and rel and ".." not in rel.replace("\\", "/").split("/") and not rel.startswith(("/", "\\")) and ":" not in rel:
+            p = (self.doc_root / rel.replace("\\", "/")).resolve()
+            if (p == self.doc_root or self.doc_root in p.parents) and p.exists():
+                return p
+        return self.safe_rel(rel)
 
     # ---- plugin
     def plugin(self):
@@ -797,7 +808,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path.startswith("/doc/"):
                 rel = u.path[5:]
                 from urllib.parse import unquote
-                p = t.safe_rel(unquote(rel))
+                p = t.safe_doc(unquote(rel))
                 if p is None or p.suffix.lower() not in DOC_TYPES:
                     return self.send_json({"error": "not a help document under the allowed folders"}, 404)
                 return self.send_file(p)
