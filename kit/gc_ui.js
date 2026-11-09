@@ -296,7 +296,7 @@ window.GC = (function () {
         const key = r + ":" + c.col;
         const cur = edits.has(key) ? edits.get(key) : v;
         const rh = RH && valIxs.includes(ci) && keyIx >= 0 ? RH[String(rowVals[keyIx] ?? "")] : null;
-        const options = rh && rh.options && rh.options.length ? rh.options : c.options;
+        const options = rh ? (rh.options || []) : c.options;     // a row with help decides its own options (a key-value sheet's column options come from one row's validation)
         if (c.locked || d.readonly) return el("td", { class: "cell " + (c.kind === "check" ? "check" : ""), title: String(v ?? "") }, isNum(v) ? fmtNum(v) : (v ?? ""));
         const onchange = (ev) => { const nv = ev.target.value; if (isNew) { appends[-r - 1][ci] = nv; } else if (String(nv) === String(v ?? "")) edits.delete(key); else edits.set(key, nv); ev.target.closest("td").classList.toggle("changed", isNew ? nv !== "" : edits.has(key)); if (rh) ev.target.closest("tr").classList.toggle("need", !!rh.required && nv === ""); refreshDirty(); };
         const inp = options.length ? el("select", { "aria-label": c.name + " row " + r, onchange }, [el("option", { value: "" }, "—"), ...options.map((o) => el("option", { value: o, selected: String(o) === String(cur ?? "") }, o)), ...(cur !== null && cur !== "" && !options.map(String).includes(String(cur)) ? [el("option", { value: String(cur), selected: true }, String(cur) + " (not in list)")] : [])])
