@@ -5,7 +5,7 @@
    glossary and A–Z index, the theme toggle (D-UI3) and the offline fallback. */
 window.GC = (function () {
   "use strict";
-  const KIT = "1.0.4";
+  const KIT = "1.1.0";
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
   const el = (tag, attrs, ...children) => {
@@ -260,7 +260,7 @@ window.GC = (function () {
     const excelBtn = openBtn(null, "Open in Excel", { what: "workbook", id: wid });
     const reloadBtn = el("button", { class: "btn sm", type: "button", onclick: () => load() }, "Reload");
     const lockBanner = el("div", {});
-    const legend = el("div", { class: "legend" }, el("span", {}, el("span", { class: "sw input" }), "input cell"), el("span", {}, el("span", { class: "sw check" }), "check / computed (read-only)"), el("span", {}, el("span", { class: "sw changed" }), "changed, not saved"));
+    const legend = el("div", { class: "legend" }, el("span", {}, el("span", { class: "sw input" }), "required input"), el("span", {}, el("span", { class: "sw optional" }), "optional input"), el("span", {}, el("span", { class: "sw check" }), "check / computed (read-only)"), el("span", {}, el("span", { class: "sw changed" }), "changed, not saved"));
     const pager = el("div", { class: "gc-row small muted" });
     bar.append(q, saveBtn, discardBtn, addBtn, excelBtn, reloadBtn, dirtyLbl);
     box.append(lockBanner, tabs, bar, msg, grid, pager, legend);
@@ -286,20 +286,25 @@ window.GC = (function () {
     function render() {
       const d = sheetData; if (!d) return;
       const cols = d.columns;
-      msg.replaceChildren(d.readonly ? banner("info", "This sheet is read-only in the page (reference data). Open the workbook in Excel to change it.") : el("span"));
+      msg.replaceChildren(d.readonly ? banner("info", "This sheet is read-only in the page (reference data). Open the workbook in Excel to change it.") : d.note ? note(d.note) : el("span"));
       addBtn.disabled = d.readonly; q.disabled = false;
-      const th = el("tr", {}, el("th", { scope: "col" }, "#"), cols.map((c) => el("th", { scope: "col", title: c.note || "" }, c.name, c.kind !== "text" ? el("span", { class: "kind" }, c.kind === "input" ? "input" : "check") : null, c.options.length || c.note ? el("span", { class: "q", title: (c.note ? c.note + "\n" : "") + (c.options.length ? "Options: " + c.options.join(", ") : ""), "aria-label": "help" }, "?") : null)));
-      const cell = (r, ci, c, v, isNew) => {
+      const colTip = (c) => [c.description || c.note || "", c.required ? "Required." : c.kind === "optional" ? "Optional." : "", c.options && c.options.length ? "Options: " + c.options.join(", ") : "", c.example ? "Example: " + c.example : ""].filter(Boolean).join("\n");
+      const th = el("tr", {}, el("th", { scope: "col" }, "#"), cols.map((c) => el("th", { scope: "col", title: colTip(c) }, c.name, c.kind !== "text" ? el("span", { class: "kind" }, c.kind === "input" ? (c.required === false ? "input" : "input") : c.kind === "optional" ? "optional" : "check") : null, colTip(c) ? el("button", { class: "q", type: "button", title: colTip(c), "aria-label": "Help: " + c.name, onclick: () => panel.open(c.name, el("p", { style: "white-space:pre-wrap" }, colTip(c))) }, "?") : null)));
+      const RH = d.rows_help || null, keyIx = RH ? cols.findIndex((c) => c.col === d.key_col) : -1, valIx = RH ? cols.findIndex((c) => c.col === d.value_col) : -1;
+      const cell = (r, ci, c, v, isNew, rowVals) => {
         const key = r + ":" + c.col;
         const cur = edits.has(key) ? edits.get(key) : v;
+        const rh = RH && ci === valIx && keyIx >= 0 ? RH[String(rowVals[keyIx] ?? "")] : null;
+        const options = rh && rh.options && rh.options.length ? rh.options : c.options;
         if (c.locked || d.readonly) return el("td", { class: "cell " + (c.kind === "check" ? "check" : ""), title: String(v ?? "") }, isNum(v) ? fmtNum(v) : (v ?? ""));
-        const onchange = (ev) => { const nv = ev.target.value; if (isNew) { appends[-r - 1][ci] = nv; } else if (String(nv) === String(v ?? "")) edits.delete(key); else edits.set(key, nv); ev.target.closest("td").classList.toggle("changed", isNew ? nv !== "" : edits.has(key)); refreshDirty(); };
-        const inp = c.options.length ? el("select", { "aria-label": c.name + " row " + r, onchange }, [el("option", { value: "" }, "—"), ...c.options.map((o) => el("option", { value: o, selected: String(o) === String(cur ?? "") }, o)), ...(cur !== null && cur !== "" && !c.options.map(String).includes(String(cur)) ? [el("option", { value: String(cur), selected: true }, String(cur) + " (not in list)")] : [])])
-          : el("input", { type: "text", value: cur ?? "", "aria-label": c.name + " row " + r, onchange, placeholder: c.kind === "input" ? "" : "" });
-        return el("td", { class: "cell " + (c.kind === "input" ? "input " : "") + (edits.has(key) || (isNew && cur !== "") ? "changed" : "") }, inp);
+        const onchange = (ev) => { const nv = ev.target.value; if (isNew) { appends[-r - 1][ci] = nv; } else if (String(nv) === String(v ?? "")) edits.delete(key); else edits.set(key, nv); ev.target.closest("td").classList.toggle("changed", isNew ? nv !== "" : edits.has(key)); if (rh) ev.target.closest("tr").classList.toggle("need", !!rh.required && nv === ""); refreshDirty(); };
+        const inp = options.length ? el("select", { "aria-label": c.name + " row " + r, onchange }, [el("option", { value: "" }, "—"), ...options.map((o) => el("option", { value: o, selected: String(o) === String(cur ?? "") }, o)), ...(cur !== null && cur !== "" && !options.map(String).includes(String(cur)) ? [el("option", { value: String(cur), selected: true }, String(cur) + " (not in list)")] : [])])
+          : el("input", { type: "text", value: cur ?? "", "aria-label": c.name + " row " + r, onchange, placeholder: rh && rh.example ? "e.g. " + rh.example : c.example ? "e.g. " + c.example : "" });
+        const tipTxt = rh ? [rh.description || "", rh.required ? "Required." : "Optional.", rh.options && rh.options.length ? "Options: " + rh.options.join(", ") : "", rh.unit ? "Unit: " + rh.unit : "", rh.example ? "Example: " + rh.example : "", rh.default !== undefined && rh.default !== "" ? "Default when blank: " + rh.default : ""].filter(Boolean).join("\n") : "";
+        return el("td", { class: "cell " + (c.kind === "input" ? "input " : c.kind === "optional" ? "optional " : "") + (edits.has(key) || (isNew && cur !== "") ? "changed" : ""), title: tipTxt }, inp, rh ? el("button", { class: "rowq", type: "button", title: tipTxt, "aria-label": "Help: " + rowVals[keyIx], onclick: () => panel.open(String(rowVals[keyIx]), el("p", { style: "white-space:pre-wrap" }, tipTxt)) }, "?") : null);
       };
-      const rows = d.rows.map((row) => el("tr", {}, el("td", { class: "num muted" }, row.r), cols.map((c, ci) => cell(row.r, ci, c, row.v[ci], false))));
-      const news = appends.map((row, k) => el("tr", {}, el("td", { class: "num muted" }, "new"), cols.map((c, ci) => cell(-k - 1, ci, c, row[ci], true))));
+      const rows = d.rows.map((row) => { const rh = RH && keyIx >= 0 ? RH[String(row.v[keyIx] ?? "")] : null; const need = rh && rh.required && (row.v[valIx] === null || row.v[valIx] === "") && !edits.has(row.r + ":" + d.value_col); return el("tr", { class: need ? "need" : null }, el("td", { class: "num muted" }, row.r), cols.map((c, ci) => cell(row.r, ci, c, row.v[ci], false, row.v))); });
+      const news = appends.map((row, k) => el("tr", {}, el("td", { class: "num muted" }, "new"), cols.map((c, ci) => cell(-k - 1, ci, c, row[ci], true, row))));
       grid.replaceChildren(el("div", { class: "tbl-wrap", style: "max-height:520px" }, el("table", { class: "gc" }, el("thead", {}, th), el("tbody", {}, rows, news))));
       const from = d.offset + 1, to = d.offset + d.rows.length;
       pager.replaceChildren(el("span", {}, d.n_rows ? "rows " + from + "–" + to + " of " + d.n_rows : "no rows"), d.offset > 0 ? el("button", { class: "btn sm", type: "button", onclick: () => loadSheet(cur, Math.max(0, d.offset - (opts.limit || 200))) }, "← Previous") : null, d.truncated ? el("button", { class: "btn sm", type: "button", onclick: () => loadSheet(cur, d.offset + d.rows.length) }, "Next →") : null, el("span", { class: "spacer" }), el("span", {}, "saved " + fmtWhen(d.mtime)));

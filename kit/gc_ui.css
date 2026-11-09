@@ -151,7 +151,13 @@ table.gc tr.sev-STOP td { background: var(--stop-soft); } table.gc tr.sev-FLAG t
 .editor .bar .dirty { color: var(--input-mark); font-weight: 600; font-size: var(--fs-1); }
 .editor table.gc td.cell { padding: 0; }
 .editor table.gc td.cell input, .editor table.gc td.cell select { width: 100%; border: 0; border-radius: 0; background: transparent; min-height: 26px; padding: 3px 8px; font-size: var(--fs-1); }
-.editor table.gc td.cell.input { background: var(--input-soft); } [data-theme="dark"] .editor table.gc td.cell.input { background: var(--input-soft); }
+.editor table.gc td.cell.input { background: var(--input-soft); }
+.editor table.gc td.cell.optional { background: var(--run-soft); }
+.editor table.gc tr.need td.cell.input input { outline: 2px solid var(--stop); outline-offset: -2px; }
+.editor table.gc td.cell .rowq { display: inline-flex; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--ink-3); color: var(--ink-3); font-size: 10px; align-items: center; justify-content: center; margin-left: 4px; cursor: help; background: transparent; padding: 0; vertical-align: 1px; } [data-theme="dark"] .editor table.gc td.cell.input { background: var(--input-soft); }
+.editor table.gc td.cell.optional { background: var(--run-soft); }
+.editor table.gc tr.need td.cell.input input { outline: 2px solid var(--stop); outline-offset: -2px; }
+.editor table.gc td.cell .rowq { display: inline-flex; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--ink-3); color: var(--ink-3); font-size: 10px; align-items: center; justify-content: center; margin-left: 4px; cursor: help; background: transparent; padding: 0; vertical-align: 1px; }
 .editor table.gc td.cell.check { background: var(--check-soft); color: var(--ink-3); padding: 3px 8px; }
 .editor table.gc td.cell.changed input, .editor table.gc td.cell.changed select { background: var(--sel); font-weight: 600; }
 .editor table.gc th .kind { font-size: 10px; color: var(--on-navy-3); margin-left: 4px; text-transform: none; font-weight: 400; }
@@ -159,7 +165,7 @@ table.gc tr.sev-STOP td { background: var(--stop-soft); } table.gc tr.sev-FLAG t
   font-size: 10px; text-align: center; line-height: 13px; margin-left: 4px; cursor: help; }
 .legend { display: flex; gap: var(--sp-4); font-size: var(--fs-0); color: var(--ink-3); flex-wrap: wrap; }
 .legend .sw { display: inline-block; width: 11px; height: 11px; border: 1px solid var(--line); vertical-align: -1px; margin-right: 4px; }
-.legend .sw.input { background: var(--input-soft); } .legend .sw.check { background: var(--check-soft); } .legend .sw.changed { background: var(--sel); }
+.legend .sw.input { background: var(--input-soft); } .legend .sw.optional { background: var(--run-soft); } .legend .sw.check { background: var(--check-soft); } .legend .sw.changed { background: var(--sel); }
 
 /* ---- log */
 .log { background: var(--log-bg); color: var(--log-ink); font-family: var(--mono); font-size: var(--fs-0); padding: 10px 12px;

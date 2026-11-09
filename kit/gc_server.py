@@ -1,4 +1,4 @@
-"""GC UI kit server 1.0.4 — the local browser server every GC tool page runs on (UI_STANDARD §2).
+"""GC UI kit server 1.1.0 — the local browser server every GC tool page runs on (UI_STANDARD §2).
 
 Standard library only (openpyxl is imported only when a workbook is read or saved). Python 3.12+. Windows first; runs
 on Linux / macOS for tests.
@@ -22,6 +22,7 @@ The page (<ui dir>/<tool>/index.html + <ui dir>/kit) talks to this process on 12
   POST /api/stop                         terminate the running action
   POST /api/open   {path | what}         open a file / folder in its Windows application (allow-listed types only)
   POST /api/sheet/save {id, sheet, mtime, edits:[{row, col, value}], appends:[[...]]}   save with backup (§2.4)
+  POST /api/copy   {path}                save a timestamped copy of a file next to it (allowed roots)
   POST /api/lenai  {id}                  prepare a LenAI folder: PROMPT.md, ATTACH/, README.md, EXPECTED_RETURN.md
 
 Rules (UI_STANDARD §2.4): binds 127.0.0.1; reads and opens only under the manifest's allowed_roots; never deletes;
@@ -48,7 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.0.4"
+KIT_VERSION = "1.1.0"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -57,6 +58,7 @@ OPENABLE = {".xlsx", ".xlsm", ".csv", ".txt", ".log", ".json", ".md", ".html", "
 DOC_TYPES = {".md", ".html", ".htm", ".txt", ".csv", ".json", ".png", ".jpg", ".jpeg", ".svg", ".gif", ".css"}
 INPUT_FILLS = {"FFFFF2CC", "00FFF2CC", "FFF2CC"}          # yellow = an input cell (GC workbook convention)
 CHECK_FILLS = {"FFC00000", "00C00000", "C00000"}          # red = a check / computed cell
+OPTIONAL_FILLS = {"FFDDEBF7", "00DDEBF7", "DDEBF7"}       # blue = an optional input cell (XoL Control convention)
 
 
 # ------------------------------------------------------------------------------------------------- helpers
@@ -280,7 +282,8 @@ class Tool:
             hfill = hfill if isinstance(hfill, str) else None
             formula = isinstance(c.value, str) and c.value.startswith("=")
             # yellow data cell = an input; a red header, a red data cell or a formula = a check / computed column
-            kind = "input" if fill in INPUT_FILLS else "check" if (fill in CHECK_FILLS or hfill in CHECK_FILLS or formula) else "text"
+            kind = "input" if fill in INPUT_FILLS else "optional" if fill in OPTIONAL_FILLS else \
+                "check" if (fill in CHECK_FILLS or hfill in CHECK_FILLS or formula) else "text"
             note = ""
             if hc.comment is not None:
                 note = str(hc.comment.text or "").strip()
@@ -383,10 +386,22 @@ class Tool:
                 rows.append({"r": r, "v": vals})
         last = ws.max_row
         wb.close()
-        return {"id": wid, "sheet": sheet, "path": self.rel(p), "mtime": fmt_t(mtime(p)), "mtime_ts": mtime(p),
-                "in_use": file_in_use(p), "readonly": sheet in set(w.get("readonly_sheets", [])),
-                "columns": meta["columns"], "header_row": hr, "rows": rows, "n_rows": n, "offset": offset,
-                "truncated": n > offset + len(rows), "max_row": last}
+        out = {"id": wid, "sheet": sheet, "path": self.rel(p), "mtime": fmt_t(mtime(p)), "mtime_ts": mtime(p),
+               "in_use": file_in_use(p), "readonly": sheet in set(w.get("readonly_sheets", [])),
+               "columns": [dict(c) for c in meta["columns"]], "header_row": hr, "rows": rows, "n_rows": n, "offset": offset,
+               "truncated": n > offset + len(rows), "max_row": last}
+        pl = self.plugin()
+        if pl is not None and hasattr(pl, "sheet_help"):
+            try:
+                extra = pl.sheet_help(self, wid, sheet, out["columns"]) or {}
+                # the tool may refine the columns (description, required, options, example, kind) and add per-row help
+                # (rows_help keyed by the value of key_col, applied to value_col: options, description, required …)
+                for k in ("columns", "rows_help", "key_col", "value_col", "note"):
+                    if k in extra:
+                        out[k] = extra[k]
+            except Exception as e:  # noqa: BLE001 - help is help, never a reason to fail
+                out["help_error"] = f"{type(e).__name__}: {e}"
+        return out
 
     def save_sheet(self, wid: str, sheet: str, seen_ts, edits: list, appends: list, force=False) -> dict:
         from openpyxl import load_workbook
@@ -888,6 +903,14 @@ class Handler(BaseHTTPRequestHandler):
                                    b.get("appends") or [], bool(b.get("force")))
                 self.audit(f"save {b.get('id')}/{b.get('sheet')}: {res.get('changed')} cells, backup {res.get('backup')}")
                 return self.send_json(res)
+            if u.path == "/api/copy":
+                p = t.safe_rel(b.get("path", ""))
+                if p is None or not p.is_file():
+                    return self.send_json({"error": "file not found or outside the allowed folders"}, 404)
+                dst = p.with_name(f"{p.stem}_{datetime.now():%Y%m%d_%H%M%S}{p.suffix}")
+                shutil.copy2(p, dst)
+                self.audit(f"copy {t.rel(p)} -> {dst.name}")
+                return self.send_json({"ok": True, "path": t.rel(dst)})
             if u.path == "/api/lenai":
                 res = t.lenai(b.get("id", ""))
                 self.audit(f"lenai {b.get('id')} -> {res['folder']}")

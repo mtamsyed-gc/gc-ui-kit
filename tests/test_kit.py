@@ -94,8 +94,10 @@ def make_fake(tmp: Path):
     ws.append(["mode", "SIMPLE", "pick", "ok"])
     yellow = PatternFill("solid", fgColor="FFFFF2CC")
     red = PatternFill("solid", fgColor="FFC00000")
+    blue = PatternFill("solid", fgColor="FFDDEBF7")
     for r in range(2, 5):
         ws.cell(row=r, column=2).fill = yellow
+        ws.cell(row=r, column=3).fill = blue
         ws.cell(row=r, column=4).fill = red
     dv = DataValidation(type="list", formula1='"SIMPLE,FULL"', allow_blank=True)
     ws.add_data_validation(dv)
@@ -110,7 +112,12 @@ def make_fake(tmp: Path):
     shutil.copytree(ROOT / "kit", ui / "kit")
     script = ui / "fake" / "step.py"
     script.write_text("import sys,time\nprint('step', sys.argv[1:]); time.sleep(float(sys.argv[1]) if sys.argv[1:] else 0); print('DONE')\nsys.exit(int(sys.argv[2]) if len(sys.argv)>2 else 0)\n")
-    (ui / "fake" / "plugin.py").write_text("def state(tool, runner):\n    return {'hello': tool.client.name}\n")
+    (ui / "fake" / "plugin.py").write_text("def state(tool, runner):\n    return {'hello': tool.client.name}\n"
+                                           "def sheet_help(tool, wid, sheet, columns):\n"
+                                           "    if sheet != 'Settings': return {}\n"
+                                           "    for c in columns:\n"
+                                           "        if c['name'] == 'Value': c['description'] = 'the value'; c['required'] = True\n"
+                                           "    return {'columns': columns, 'key_col': 1, 'value_col': 2, 'rows_help': {'payer': {'description': 'payer code', 'required': True, 'options': ['ABC', 'XYZ']}}, 'note': 'help note'}\n")
     (ui / "fake" / "glossary.json").write_text(json.dumps([{"term": "Burning cost", "definition": "Tool override.", "category": "method"},
                                                             {"term": "Payer tab", "definition": "The payer sheet.", "category": "file"}]))
     (ui / "fake" / "index.html").write_text("<!doctype html><title>fake</title>")
@@ -202,7 +209,12 @@ def test_server():
         check([x["name"] for x in j["sheets"]] == ["Settings", "Ref"] and j["sheets"][1]["readonly"], "workbook info with read-only sheet")
         st, j = s.get("/api/sheet?id=book&sheet=Settings")
         cols = j["columns"]
-        check([c["kind"] for c in cols] == ["text", "input", "text", "check"], f"column kinds from fills ({[c['kind'] for c in cols]})")
+        check([c["kind"] for c in cols] == ["text", "input", "optional", "check"], f"column kinds from fills ({[c['kind'] for c in cols]})")
+        check(cols[1].get("description") == "the value" and j.get("rows_help", {}).get("payer", {}).get("options") == ["ABC", "XYZ"] and j.get("note") == "help note", "plugin sheet_help merged (columns, rows_help, note)")
+        st, cp = s.post("/api/copy", {"path": "out/csv/t.csv"})
+        check(st == 200 and cp["path"].startswith("out/csv/t_") and (client / cp["path"]).exists(), f"copy endpoint ({cp})")
+        st, cp = s.post("/api/copy", {"path": "secret/x.csv"})
+        check(st == 404, "copy outside roots refused")
         check(cols[1]["options"] == ["SIMPLE", "FULL"], f"options from the data validation ({cols[1]['options']})")
         check(cols[3]["locked"] and not cols[1]["locked"], "check column locked")
         check(j["rows"][1]["v"][1] == "2026-01-01", f"date cell read as yyyy-mm-dd ({j['rows'][1]['v'][1]})")

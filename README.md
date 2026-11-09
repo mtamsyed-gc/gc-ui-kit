@@ -1,6 +1,6 @@
 # gc-ui-kit — the shared UI kit for GC tool front ends
 
-Kit 1.0.0 implements the **GC Tools UI Standard** (`UI_STANDARD.md`, UI-0.3) for every browser page of the owner's GC
+Kit 1.1.0 implements the **GC Tools UI Standard** (`UI_STANDARD.md`, UI-0.3) for every browser page of the owner's GC
 tools: Merit (first adopter of this kit), the XoL pricing tool (to be retrofitted from its own kit 0.9.0), TSM, the
 pricing workbench. Private repository; the kit ships inside each tool's release pack.
 
@@ -25,6 +25,10 @@ pricing workbench. Private repository; the kit ships inside each tool's release 
 3. A launcher (`.cmd`) runs `py ui/kit/gc_server.py --manifest ui/<tool>/manifest.json --client <folder> --port <tool port>`.
 
 Ports: XoL 8765, Merit 8766, TSM 8767, workbench 8768.
+
+## Manifest schema notes
+
+- 1.1.0: a plugin may define `sheet_help(tool, wid, sheet, columns)` returning refined `columns` (description, required, options, example, kind), per-row help (`rows_help` keyed by the value of `key_col`, applied to `value_col`) and a sheet `note`; blue fill `DDEBF7` = an optional input (kind `optional`); `POST /api/copy {path}` saves a timestamped copy of an allowed file.
 
 ## Rules
 
