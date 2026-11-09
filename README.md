@@ -1,7 +1,7 @@
 # gc-ui-kit — the shared UI kit for GC tool front ends
 
 Kit 1.1.1 implements the **GC Tools UI Standard** (`UI_STANDARD.md`, UI-0.3) for every browser page of the owner's GC
-tools: Merit (first adopter of this kit), the XoL pricing tool (to be retrofitted from its own kit 0.9.0), TSM, the
+tools: Merit (first adopter of this kit), the XoL pricing tool (0.9.1, kit 1.1.1), TSM, the
 pricing workbench. Private repository; the kit ships inside each tool's release pack.
 
 ## What is here
