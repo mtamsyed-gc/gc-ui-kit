@@ -5,7 +5,7 @@
    glossary and A–Z index, the theme toggle (D-UI3) and the offline fallback. */
 window.GC = (function () {
   "use strict";
-  const KIT = "1.1.1";
+  const KIT = "1.2.0";
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
   const el = (tag, attrs, ...children) => {

@@ -50,7 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.1.1"
+KIT_VERSION = "1.2.0"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -218,7 +218,20 @@ class Tool:
         return self.actions()[aid]
 
     def workbooks(self) -> dict:
-        return self.m.get("editable_workbooks", {})
+        """The manifest's editable_workbooks plus those the plugin's workbooks(tool) discovers (1.2.0: client
+        templates found on disk). Plugin entries use the same schema; a manifest id wins on a clash."""
+        out = {}
+        pl = self.plugin()
+        fn = getattr(pl, "workbooks", None) if pl is not None else None
+        if fn is not None:
+            try:
+                for wid, w in (fn(self) or {}).items():
+                    if re.fullmatch(r"[\w.-]+", wid) and isinstance(w, dict) and w.get("path"):
+                        out[wid] = w
+            except Exception as e:  # noqa: BLE001  (a plugin fault must not take the page down)
+                print(f"plugin workbooks(): {e}", file=sys.stderr)
+        out.update(self.m.get("editable_workbooks", {}))
+        return out
 
     def workbook(self, wid: str) -> tuple[dict, Path]:
         if wid not in self.workbooks():
@@ -607,7 +620,14 @@ class Runner:
                         raise ValueError(f"{name}: {v} is not one of {how['choices']}")
                     if how.get("pattern") and not re.fullmatch(how["pattern"], str(v)):
                         raise ValueError(f"{name}: {v!r} is not a valid value")
-                    cmd.append(str(v))
+                    if how.get("rel_path"):
+                        # 1.2.0: a path inside the allowed roots, given relative to the client folder, passed absolute
+                        p = t.safe_rel(str(v))
+                        if p is None or not p.exists():
+                            raise ValueError(f"{name}: {v} is not a file inside the tool's folders")
+                        cmd.append(str(p))
+                    else:
+                        cmd.append(str(v))
                 continue
             if v in (None, "", False):
                 continue
@@ -658,6 +678,9 @@ class Runner:
             fh.write(f"[{st['started']}] {subprocess.list2cmdline(cmd)}\n")
             fh.flush()
             env = dict(os.environ, GC_UI="1", PYTHONIOENCODING="utf-8")
+            subst = {"client": str(t.client), "ui": str(t.ui_dir), "page": str(t.page_dir)}
+            for k, v in (a.get("env") or {}).items():            # 1.2.0: per-action environment, {client} etc.
+                env[str(k)] = str(v).format(**subst)
             try:
                 self.proc = subprocess.Popen(cmd, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=fh,
                                              stderr=subprocess.STDOUT, env=env)

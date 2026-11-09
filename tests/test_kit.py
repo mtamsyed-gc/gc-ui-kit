@@ -111,9 +111,10 @@ def make_fake(tmp: Path):
     (ui / "fake").mkdir(parents=True)
     shutil.copytree(ROOT / "kit", ui / "kit")
     script = ui / "fake" / "step.py"
-    script.write_text("import sys,time\nprint('step', sys.argv[1:]); time.sleep(float(sys.argv[1]) if sys.argv[1:] else 0); print('DONE')\nsys.exit(int(sys.argv[2]) if len(sys.argv)>2 else 0)\n")
+    script.write_text("import sys,time,os\nprint('step', sys.argv[1:], 'ENV', os.environ.get('FAKE_CLIENT')); time.sleep(float(sys.argv[1]) if sys.argv[1:] else 0); print('DONE')\nsys.exit(int(sys.argv[2]) if len(sys.argv)>2 else 0)\n")
     (ui / "fake" / "plugin.py").write_text("def state(tool, runner):\n    return {'hello': tool.client.name}\n"
                                            "def api_echo(tool, q):\n    return {'echo': q.get('x')}\n"
+                                           "def workbooks(tool):\n    return {'disc': {'path': '02_Inputs/Book.xlsx', 'title': 'Discovered'}, 'book': {'path': 'wrong', 'title': 'clash'}, 'bad id!': {'path': 'x'}}\n"
                                            "def sheet_help(tool, wid, sheet, columns):\n"
                                            "    if sheet != 'Settings': return {}\n"
                                            "    for c in columns:\n"
@@ -129,6 +130,7 @@ def make_fake(tmp: Path):
                 "actions": {"step": {"title": "Step", "command": ["{py}", str(script), "0.05"], "args": {"rc": {"choices": ["0", "1", "2"]}},
                                      "backup_before": ["02_Inputs/Book.xlsx"]},
                             "pos": {"title": "Pos", "command": ["{py}", str(script), "0"], "args": {"a": {"positional": True, "default": "-"}, "b": {"positional": True, "pattern": "[0-9]+"}}},
+                            "path": {"title": "Path", "command": ["{py}", str(script), "0"], "args": {"f": {"positional": True, "rel_path": True}}, "env": {"FAKE_CLIENT": "{client}"}},
                             "slow": {"title": "Slow", "command": ["{py}", str(script), "30"]}},
                 "lenai": {"map": {"title": "Mapping assist", "prompt_file": "docs/guide.md", "prompt_section": "Mapping assist",
                                   "attach": ["02_Inputs/Book.xlsx", "01_Info/none.csv"], "expected_return": "A digest.", "return_to": "02_Inputs"}},
@@ -287,6 +289,27 @@ def test_server():
         check(cmd[-2:] == ["-", "12"], f"positional defaults and order ({cmd[-2:]})")
         st, j = s.post("/api/run", {"action": "nope"})
         check(st == 400, "unknown action refused")
+        # 1.2.0: rel_path positional, env, plugin workbooks
+        cmd = rn.command(rn.tool.action("path"), {"f": "02_Inputs/Book.xlsx"})
+        check(cmd[-1] == str((client / "02_Inputs" / "Book.xlsx").resolve()), f"rel_path arg passed absolute ({cmd[-1]})")
+        for bad in ("secret/x.csv", "../x", "02_Inputs/none.xlsx"):
+            try:
+                rn.command(rn.tool.action("path"), {"f": bad}); check(False, f"rel_path outside / missing refused ({bad})")
+            except ValueError:
+                check(True, f"rel_path outside / missing refused ({bad})")
+        wbs = rn.tool.workbooks()
+        check("disc" in wbs and wbs["book"]["title"] == "Book" and "bad id!" not in wbs, f"plugin workbooks merged, manifest wins, bad ids dropped ({sorted(wbs)})")
+        st, j = s.get("/api/workbook?id=disc")
+        check(st == 200 and j["exists"] and [x["name"] for x in j["sheets"]] == ["Settings", "Ref"], "discovered workbook served")
+        st, j = s.get("/api/state")
+        check("disc" in j["workbooks"], "discovered workbook in state")
+        st, j = s.post("/api/run", {"action": "path", "args": {"f": "02_Inputs/Book.xlsx"}})
+        for _ in range(60):
+            time.sleep(0.1)
+            st, l = s.get("/api/log")
+            if not l["running"]:
+                break
+        check(any(f"ENV {client.resolve()}" in x for x in l["lines"]), "action env {client} substituted")
         st, j = s.post("/api/run", {"action": "step", "args": {"rc": "2"}})
         for _ in range(60):
             time.sleep(0.1)
@@ -305,7 +328,7 @@ def test_server():
                 break
         check(not l["running"] and l["run"]["rc"] != 0, "stop terminates the run")
         st, j = s.get("/api/runs")
-        check(len(j["runs"]) == 3, f"run history kept ({len(j['runs'])})")
+        check(len(j["runs"]) == 4, f"run history kept ({len(j['runs'])})")
         acts = (client / "ui_state" / "ui_actions.log").read_text()
         check("run step" in acts and "save book/Settings" in acts and "lenai map" in acts and "open 02_Inputs/Book.xlsx" in acts, "ui_actions.log audits run, save, lenai, open")
         # nothing deleted / written outside the allowed places
