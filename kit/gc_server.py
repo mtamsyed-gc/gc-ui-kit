@@ -1,4 +1,4 @@
-"""GC UI kit server 1.1.0 — the local browser server every GC tool page runs on (UI_STANDARD §2).
+"""GC UI kit server 1.1.1 — the local browser server every GC tool page runs on (UI_STANDARD §2).
 
 Standard library only (openpyxl is imported only when a workbook is read or saved). Python 3.12+. Windows first; runs
 on Linux / macOS for tests.
@@ -18,6 +18,7 @@ The page (<ui dir>/<tool>/index.html + <ui dir>/kit) talks to this process on 12
   GET  /api/workbook?id=                 an editable workbook: sheets and their sizes, lock state
   GET  /api/sheet?id=&sheet=&offset=&limit=&q=   one sheet: header, column help (options, input / check), rows
   GET  /api/glossary                     the merged glossary (kit common + tool)
+  GET  /api/plugin/<name>?...            a read-only route the tool plugin defines as api_<name>(tool, query)
   POST /api/run    {action, args}        start a manifest action (a launcher) — one run at a time, stdin closed
   POST /api/stop                         terminate the running action
   POST /api/open   {path | what}         open a file / folder in its Windows application (allow-listed types only)
@@ -49,7 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.1.0"
+KIT_VERSION = "1.1.1"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -794,6 +795,13 @@ class Handler(BaseHTTPRequestHandler):
                                               int(q.get("limit", MAX_ROWS)), q.get("q", "")))
             if u.path == "/api/glossary":
                 return self.send_json({"entries": t.glossary()})
+            if u.path.startswith("/api/plugin/"):
+                name = u.path[len("/api/plugin/"):]
+                pl = t.plugin()
+                fn = getattr(pl, "api_" + name, None) if pl is not None and re.fullmatch(r"\w+", name) else None
+                if fn is None:
+                    return self.send_json({"error": f"no plugin route {name}"}, 404)
+                return self.send_json(fn(t, q))          # a read-only tool route: GET only, query string as a dict
             return self.send_json({"error": "not found"}, 404)
         except ValueError as e:
             return self.send_json({"error": str(e)}, 400)

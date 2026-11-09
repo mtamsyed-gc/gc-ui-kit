@@ -113,6 +113,7 @@ def make_fake(tmp: Path):
     script = ui / "fake" / "step.py"
     script.write_text("import sys,time\nprint('step', sys.argv[1:]); time.sleep(float(sys.argv[1]) if sys.argv[1:] else 0); print('DONE')\nsys.exit(int(sys.argv[2]) if len(sys.argv)>2 else 0)\n")
     (ui / "fake" / "plugin.py").write_text("def state(tool, runner):\n    return {'hello': tool.client.name}\n"
+                                           "def api_echo(tool, q):\n    return {'echo': q.get('x')}\n"
                                            "def sheet_help(tool, wid, sheet, columns):\n"
                                            "    if sheet != 'Settings': return {}\n"
                                            "    for c in columns:\n"
@@ -211,6 +212,10 @@ def test_server():
         cols = j["columns"]
         check([c["kind"] for c in cols] == ["text", "input", "optional", "check"], f"column kinds from fills ({[c['kind'] for c in cols]})")
         check(cols[1].get("description") == "the value" and j.get("rows_help", {}).get("payer", {}).get("options") == ["ABC", "XYZ"] and j.get("note") == "help note", "plugin sheet_help merged (columns, rows_help, note)")
+        st, e = s.get("/api/plugin/echo?x=7")
+        check(st == 200 and e == {"echo": "7"}, "plugin GET route")
+        st, e = s.geterr("/api/plugin/nope")
+        check(st == 404, "unknown plugin route 404")
         st, cp = s.post("/api/copy", {"path": "out/csv/t.csv"})
         check(st == 200 and cp["path"].startswith("out/csv/t_") and (client / cp["path"]).exists(), f"copy endpoint ({cp})")
         st, cp = s.post("/api/copy", {"path": "secret/x.csv"})
