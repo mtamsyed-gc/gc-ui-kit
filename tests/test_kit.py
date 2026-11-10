@@ -272,6 +272,10 @@ def test_server():
         (client / "out" / "run.cmd").write_text("x")
         st, j = s.post("/api/open", {"path": "out/run.cmd"})
         check(st == 403, "open a script refused")
+        st, j = s.post("/api/open", {"path": "."})
+        check(st == 200 and j["ok"], f"open the client folder itself ('.', 1.2.2) ({j})")
+        st, j = s.post("/api/open", {"path": "./secret/x.csv"})
+        check(st == 404, "a file under the client root but outside the roots still refused")
         # lenai
         st, j = s.post("/api/lenai", {"id": "map"})
         check(st == 200 and j["attached"] == ["Book.xlsx"] and j["missing"] == ["01_Info/none.csv"], f"lenai folder prepared ({j})")
@@ -396,6 +400,17 @@ def test_row_options():
     check(cols["Mapped"]["options"] == ["P1", "P2"], "column options = the first list (as before)")
     check(cols["Mapped"].get("free") and not cols["Include"].get("free") and cols["Raw"].get("free"), "free = Excel accepts a typed value (no alert, or a warning alert); a stop alert stays strict")
     check("row_options" not in cols["Include"], "one list for the whole column: no row_options")
+    ws2 = wb.create_sheet("KV")
+    ws2.append(["Setting", "Value"])
+    for k in ("Version", "Collated input", "Valuation date"):
+        ws2.append([k, None])
+    one = DataValidation(type="list", formula1='"CSV,Parquet"', showErrorMessage=True)
+    one.add("B3")
+    ws2.add_data_validation(one)
+    m2 = GS.Tool.sheet_meta(fake, wb, ws2, {})
+    v = m2["columns"][1]
+    check(v.get("row_options") == [[3, 3, 0]] and m2["option_sets"] == [["CSV", "Parquet"]], f"a list on one row only: offered on that row only ({v.get('row_options')})")
+    check("(c.row_options && r > 0) ? []" in js, "the editor gives rows outside every list no drop-down")
     js = (ROOT / "kit" / "gc_ui.js").read_text(encoding="utf-8")
     check("row_options" in js and "datalist" in js and "option_sets" in js, "the editor uses row_options and offers free lists as suggestions (datalist)")
 

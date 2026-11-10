@@ -176,7 +176,7 @@ window.GC = (function () {
   }
   function openBtn(path, label, opts) {
     opts = opts || {};
-    return el("button", { class: "btn sm", type: "button", onclick: async () => { try { await api("/api/open", opts.what ? { what: opts.what, id: opts.id } : { path }); toast("Opened " + (label || path)); } catch (e) { toast(e.message); } } }, label || "Open");
+    return el("button", { class: "btn sm", type: "button", onclick: async () => { try { await api("/api/open", opts.what ? { what: opts.what, id: opts.id } : { path }); toast((label && /^Open\b/.test(label) ? label.replace(/^Open\b/, "Opened") : "Opened " + (label || path))); } catch (e) { toast(e.message); } } }, label || "Open");
   }
 
   // ---- log viewer
@@ -307,7 +307,7 @@ window.GC = (function () {
         // a row with help decides its own options (a key-value sheet's column options come from one row's validation);
         // 1.2.2: else the list of this row's own validation (row_options), else the column's
         const ro = !rh && c.row_options && r > 0 ? c.row_options.find((x) => r >= x[0] && r <= x[1]) : null;
-        const options = rh ? (rh.options || []) : ro ? (d.option_sets[ro[2]] || []) : c.options;
+        const options = rh ? (rh.options || []) : ro ? (d.option_sets[ro[2]] || []) : (c.row_options && r > 0) ? [] : c.options;
         const free = !!c.free && !(rh && rh.options && rh.options.length && rh.strict);
         if (c.locked || d.readonly) return el("td", { class: "cell " + (c.kind === "check" ? "check" : ""), title: String(v ?? "") }, isNum(v) ? fmtNum(v) : (v ?? ""));
         const onchange = (ev) => { const nv = ev.target.value; if (isNew) { appends[-r - 1][ci] = nv; } else if (String(nv) === String(v ?? "")) edits.delete(key); else edits.set(key, nv); ev.target.closest("td").classList.toggle("changed", isNew ? nv !== "" : edits.has(key)); if (rh) ev.target.closest("tr").classList.toggle("need", !!rh.required && nv === ""); refreshDirty(); };

@@ -314,7 +314,11 @@ class Tool:
                 if o not in distinct:
                     distinct.append(o)
             dv_opts[ci] = distinct[0]                # the first list, as before 1.2.2 (a column with one list)
-            if len(distinct) > 1:
+            # a list that covers only some rows (Merit's Run settings: CSV / Parquet on one key's row) must not be
+            # offered on the others: rows outside every range then get no list (free typing)
+            last = max(ws.max_row or 0, header_row + 1)
+            covered = all(any(r1 <= r <= r2 for r1, r2, _ in rs) for r in range(header_row + 1, last + 1))
+            if len(distinct) > 1 or not covered:
                 rows_ = []
                 for r1, r2, o in sorted(rs, key=lambda x: x[0]):
                     if o not in sets:
@@ -1001,6 +1005,8 @@ class Handler(BaseHTTPRequestHandler):
             w, p = t.workbook(b.get("id", ""))
         elif b.get("what") == "state":
             p = t.state_dir
+        elif rel.strip() in (".", "./", ".\\"):
+            p = t.client                     # 1.2.2: the client folder itself (a folder; its files stay root-checked)
         else:
             p = t.safe_rel(rel)
         if p is None or not p.exists():
