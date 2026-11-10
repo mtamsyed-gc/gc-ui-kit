@@ -50,7 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.2.1"
+KIT_VERSION = "1.2.2"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -280,23 +280,47 @@ class Tool:
             head.pop()
         ncol = len(head)
         cols = []
-        # data validations: list options per column (A1 ranges of the sheet, "A,B,C" literals, or a range elsewhere)
-        dv_opts = {}
+        # data validations: list options per column (A1 ranges of the sheet, "A,B,C" literals, or a range elsewhere).
+        # 1.2.2: a column whose rows carry different lists (Merit's Columns tab: the premium list on premium rows, the
+        # claims list on claims rows) gets row_options = [[first row, last row, set index]] into option_sets; and a
+        # validation Excel lets the user type past (no error alert, or a warning / information alert) marks the
+        # column free: the page then offers the list as suggestions and accepts any typed value, as Excel does.
+        dv_rng = {}                               # col -> [(r1, r2, opts)]
+        dv_free = set()
         try:
             for dv in ws.data_validations.dataValidation:
                 if dv.type != "list" or not dv.formula1:
                     continue
                 opts = self._dv_options(wb, ws, dv.formula1)
+                free = (not dv.showErrorMessage) or (dv.errorStyle in ("warning", "information"))
                 for rng in str(dv.sqref).split():
                     m = re.match(r"\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?", rng)
                     if not m:
                         continue
                     c1 = _col_index(m.group(1))
                     c2 = _col_index(m.group(3)) if m.group(3) else c1
+                    r1 = int(m.group(2))
+                    r2 = int(m.group(4)) if m.group(4) else r1
                     for ci in range(c1, c2 + 1):
-                        dv_opts.setdefault(ci, opts)
+                        dv_rng.setdefault(ci, []).append((r1, r2, opts))
+                        if free:
+                            dv_free.add(ci)
         except Exception:  # noqa: BLE001 - validations are help, never a reason to fail
             pass
+        dv_opts, dv_rows, sets = {}, {}, []
+        for ci, rs in dv_rng.items():
+            distinct = []
+            for _, _, o in rs:
+                if o not in distinct:
+                    distinct.append(o)
+            dv_opts[ci] = distinct[0]                # the first list, as before 1.2.2 (a column with one list)
+            if len(distinct) > 1:
+                rows_ = []
+                for r1, r2, o in sorted(rs, key=lambda x: x[0]):
+                    if o not in sets:
+                        sets.append(o)
+                    rows_.append([r1, r2, sets.index(o)])
+                dv_rows[ci] = rows_
         first = header_row + 1
         for i, name in enumerate(head, 1):
             c = ws.cell(row=first, column=i)
@@ -312,9 +336,14 @@ class Tool:
             note = ""
             if hc.comment is not None:
                 note = str(hc.comment.text or "").strip()
-            cols.append({"name": name, "col": i, "kind": kind, "options": dv_opts.get(i, []), "note": note,
-                         "locked": name in set(w.get("readonly_columns", [])) or kind == "check"})
-        return {"header_row": header_row, "columns": cols, "ncol": ncol}
+            col = {"name": name, "col": i, "kind": kind, "options": dv_opts.get(i, []), "note": note,
+                   "locked": name in set(w.get("readonly_columns", [])) or kind == "check"}
+            if i in dv_rows:
+                col["row_options"] = dv_rows[i]
+            if i in dv_free:
+                col["free"] = True
+            cols.append(col)
+        return {"header_row": header_row, "columns": cols, "ncol": ncol, "option_sets": sets}
 
     def _dv_options(self, wb, ws, formula: str) -> list[str]:
         f = formula.strip()
@@ -413,7 +442,7 @@ class Tool:
         wb.close()
         out = {"id": wid, "sheet": sheet, "path": self.rel(p), "mtime": fmt_t(mtime(p)), "mtime_ts": mtime(p),
                "in_use": file_in_use(p), "readonly": sheet in set(w.get("readonly_sheets", [])),
-               "columns": [dict(c) for c in meta["columns"]], "header_row": hr, "rows": rows, "n_rows": n, "offset": offset,
+               "columns": [dict(c) for c in meta["columns"]], "option_sets": meta.get("option_sets", []), "header_row": hr, "rows": rows, "n_rows": n, "offset": offset,
                "truncated": n > offset + len(rows), "max_row": last}
         pl = self.plugin()
         if pl is not None and hasattr(pl, "sheet_help"):

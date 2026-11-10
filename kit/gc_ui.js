@@ -5,7 +5,7 @@
    glossary and A–Z index, the theme toggle (D-UI3) and the offline fallback. */
 window.GC = (function () {
   "use strict";
-  const KIT = "1.2.1";
+  const KIT = "1.2.2";
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
   const el = (tag, attrs, ...children) => {
@@ -257,6 +257,9 @@ window.GC = (function () {
     const grid = el("div", {});
     const msg = el("div", {});
     let info = null, cur = null, sheetData = null, edits = new Map(), appends = [];
+    const lists = el("div", { hidden: true });                      // 1.2.2: one <datalist> per distinct option list
+    const listIds = new Map();
+    const listId = (options) => { const k = options.join("\u0001"); if (!listIds.has(k)) { const id = "dl-" + wid + "-" + listIds.size; listIds.set(k, id); lists.append(el("datalist", { id }, options.map((o) => el("option", { value: o })))); } return listIds.get(k); };
     const dirtyLbl = el("span", { class: "dirty" });
     const q = el("input", { type: "search", placeholder: "Filter rows", "aria-label": "Filter rows", oninput: () => { clearTimeout(q._t); q._t = setTimeout(() => loadSheet(cur, 0), 300); } });
     const saveBtn = el("button", { class: "btn primary sm", type: "button", onclick: save }, "Save");
@@ -268,7 +271,7 @@ window.GC = (function () {
     const legend = el("div", { class: "legend" }, el("span", {}, el("span", { class: "sw input" }), "required input"), el("span", {}, el("span", { class: "sw optional" }), "optional input"), el("span", {}, el("span", { class: "sw check" }), "check / computed (read-only)"), el("span", {}, el("span", { class: "sw changed" }), "changed, not saved"));
     const pager = el("div", { class: "gc-row small muted" });
     bar.append(q, saveBtn, discardBtn, addBtn, excelBtn, reloadBtn, dirtyLbl);
-    box.append(lockBanner, tabs, bar, msg, grid, pager, legend);
+    box.append(lockBanner, tabs, bar, msg, grid, pager, legend, lists);
     const dirty = () => edits.size + appends.length;
     const refreshDirty = () => { dirtyLbl.textContent = dirty() ? dirty() + " unsaved change" + (dirty() > 1 ? "s" : "") : ""; saveBtn.disabled = !dirty() || (sheetData && sheetData.readonly); discardBtn.disabled = !dirty(); };
     async function load() {
@@ -301,11 +304,18 @@ window.GC = (function () {
         const key = r + ":" + c.col;
         const cur = edits.has(key) ? edits.get(key) : v;
         const rh = RH && valIxs.includes(ci) && keyIx >= 0 ? RH[String(rowVals[keyIx] ?? "")] : null;
-        const options = rh ? (rh.options || []) : c.options;     // a row with help decides its own options (a key-value sheet's column options come from one row's validation)
+        // a row with help decides its own options (a key-value sheet's column options come from one row's validation);
+        // 1.2.2: else the list of this row's own validation (row_options), else the column's
+        const ro = !rh && c.row_options && r > 0 ? c.row_options.find((x) => r >= x[0] && r <= x[1]) : null;
+        const options = rh ? (rh.options || []) : ro ? (d.option_sets[ro[2]] || []) : c.options;
+        const free = !!c.free && !(rh && rh.options && rh.options.length && rh.strict);
         if (c.locked || d.readonly) return el("td", { class: "cell " + (c.kind === "check" ? "check" : ""), title: String(v ?? "") }, isNum(v) ? fmtNum(v) : (v ?? ""));
         const onchange = (ev) => { const nv = ev.target.value; if (isNew) { appends[-r - 1][ci] = nv; } else if (String(nv) === String(v ?? "")) edits.delete(key); else edits.set(key, nv); ev.target.closest("td").classList.toggle("changed", isNew ? nv !== "" : edits.has(key)); if (rh) ev.target.closest("tr").classList.toggle("need", !!rh.required && nv === ""); refreshDirty(); };
-        const inp = options.length ? el("select", { "aria-label": c.name + " row " + r, onchange }, [el("option", { value: "" }, "—"), ...options.map((o) => el("option", { value: o, selected: String(o) === String(cur ?? "") }, o)), ...(cur !== null && cur !== "" && !options.map(String).includes(String(cur)) ? [el("option", { value: String(cur), selected: true }, String(cur) + " (not in list)")] : [])])
-          : el("input", { type: "text", value: cur ?? "", "aria-label": c.name + " row " + r, onchange, placeholder: rh && rh.example ? "e.g. " + rh.example : c.example ? "e.g. " + c.example : "" });
+        // 1.2.2: a list Excel lets the user type past (free) = a text box with the list as suggestions, so any value
+        // Excel accepts (a value not in the list, "field a; field b") can be typed here too; a strict list = a drop-down
+        const dl = options.length && free ? listId(options) : null;
+        const inp = options.length && !free ? el("select", { "aria-label": c.name + " row " + r, onchange }, [el("option", { value: "" }, "—"), ...options.map((o) => el("option", { value: o, selected: String(o) === String(cur ?? "") }, o)), ...(cur !== null && cur !== "" && !options.map(String).includes(String(cur)) ? [el("option", { value: String(cur), selected: true }, String(cur) + " (not in list)")] : [])])
+          : el("input", { type: "text", value: cur ?? "", list: dl, autocomplete: "off", "aria-label": c.name + " row " + r, onchange, placeholder: rh && rh.example ? "e.g. " + rh.example : c.example ? "e.g. " + c.example : "" });
         const tipTxt = rh ? [rh.description || "", rh.required ? "Required." : "Optional.", rh.options && rh.options.length ? "Options: " + rh.options.join(", ") : "", rh.unit ? "Unit: " + rh.unit : "", rh.example ? "Example: " + rh.example : "", rh.default !== undefined && rh.default !== "" ? "Default when blank: " + rh.default : ""].filter(Boolean).join("\n") : "";
         return el("td", { class: "cell " + (c.kind === "input" ? "input " : c.kind === "optional" ? "optional " : "") + (edits.has(key) || (isNew && cur !== "") ? "changed" : ""), title: tipTxt }, inp, rh && ci === valIx ? el("button", { class: "rowq", type: "button", title: tipTxt, "aria-label": "Help: " + rowVals[keyIx], onclick: () => panel.open(String(rowVals[keyIx]), el("p", { style: "white-space:pre-wrap" }, tipTxt)) }, "?") : null);
       };

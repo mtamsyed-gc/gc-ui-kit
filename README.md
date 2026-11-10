@@ -1,6 +1,6 @@
 # gc-ui-kit — the shared UI kit for GC tool front ends
 
-Kit 1.2.1 implements the **GC Tools UI Standard** (`UI_STANDARD.md`, UI-0.3) for every browser page of the owner's GC
+Kit 1.2.2 implements the **GC Tools UI Standard** (`UI_STANDARD.md`, UI-0.3) for every browser page of the owner's GC
 tools: Merit (first adopter of this kit), the XoL pricing tool (0.9.1, kit 1.1.1), TSM (TW-1.2, kit 1.2.0), the
 pricing workbench. Private repository; the kit ships inside each tool's release pack.
 
@@ -28,6 +28,7 @@ Ports: XoL 8765, Merit 8766, TSM 8767, workbench 8768.
 
 ## Manifest schema notes
 
+- 1.2.2 fix (no manifest change; `/api/sheet` adds fields): a column whose rows carry different validation lists gets `row_options` = `[[first row, last row, set]]` into the sheet's `option_sets`, and the editor offers each row its own list (Merit's Columns tab: the claims list on claims rows, the premium list on premium rows; the Values tab: each field's standards). A list Excel lets the user type past (no error alert, or a warning / information alert) is `free`: the editor shows a text box with the list as suggestions (`<datalist>`), so every value Excel accepts can be entered in the page too (a value not in the list, two fields `a; b`); a strict list (stop alert) stays a drop-down. Found by Merit's browser test: 15 Values-tab standards and two two-field mappings of the demo client's answer key could not be entered in the page.
 - 1.2.1 fix (no schema change): `runButton` awaits an `args` function, so a dialog's answers reach the launcher and the run starts only once the dialog is answered; `null` (Cancel) starts no run. Before 1.2.1 an async dialog's run started at the click with args `{}` and the answers were dropped (found on Merit's Intake profile: the payer typed was ignored). Every tool page with an args dialog (Merit, XoL, TSM) must re-vendor. Test: `tests/js_runbutton.js`.
 - 1.2.0: a plugin may define `workbooks(tool)` returning extra `editable_workbooks` entries discovered at run time (same schema; a manifest id wins on a clash) — for tools whose editable files are one per client folder; a positional action arg may carry `"rel_path": true` (the page gives a path relative to the client folder, the server checks it is an existing file inside the allowed roots and passes it absolute); an action may carry `"env": {NAME: value}` with `{client}`, `{ui}`, `{page}` substituted; `sheet_help` may return `value_cols` (a list) when one key column's help applies to several value columns (a scenario grid); `"doc_root": "{ui}/.."` serves `/doc/<file>` from the tool's own folder when the client folder holds data only.
 - 1.2.0 fix: in a key-value sheet with `rows_help`, a row's options are its own (previously a row without options inherited the column's, taken from another row's validation).

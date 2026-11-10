@@ -362,8 +362,46 @@ def test_vendor():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- 1.2.2 per-row lists and lists Excel lets you type past
+def test_row_options():
+    from openpyxl import Workbook
+    from openpyxl.worksheet.datavalidation import DataValidation
+    import types
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cols"
+    ref = wb.create_sheet("_lists")
+    for i, v in enumerate(["P1", "P2"], 1):
+        ref.cell(i, 1, v)
+    for i, v in enumerate(["C1", "C2", "C3"], 1):
+        ref.cell(i, 2, v)
+    ws.append(["Raw", "Mapped", "Include"])
+    for i in range(6):
+        ws.append([f"r{i}", None, "Y"])
+    a = DataValidation(type="list", formula1="=_lists!$A$1:$A$2", showErrorMessage=False)
+    a.add("B2:B4")
+    b = DataValidation(type="list", formula1="=_lists!$B$1:$B$3", showErrorMessage=False)
+    b.add("B5:B7")
+    c = DataValidation(type="list", formula1='"Y,N"', showErrorMessage=True)
+    c.add("C2:C7")
+    w = DataValidation(type="list", formula1='"Q"', showErrorMessage=True, errorStyle="warning")
+    w.add("A2:A7")
+    for v in (a, b, c, w):
+        ws.add_data_validation(v)
+    fake = types.SimpleNamespace(_dv_options=lambda wb_, ws_, f: GS.Tool._dv_options(None, wb_, ws_, f))
+    m = GS.Tool.sheet_meta(fake, wb, ws, {})
+    cols = {c_["name"]: c_ for c_ in m["columns"]}
+    ro = cols["Mapped"].get("row_options")
+    check(ro == [[2, 4, 0], [5, 7, 1]] and m["option_sets"] == [["P1", "P2"], ["C1", "C2", "C3"]], f"per-row lists: row_options and option_sets ({ro}, {m['option_sets']})")
+    check(cols["Mapped"]["options"] == ["P1", "P2"], "column options = the first list (as before)")
+    check(cols["Mapped"].get("free") and not cols["Include"].get("free") and cols["Raw"].get("free"), "free = Excel accepts a typed value (no alert, or a warning alert); a stop alert stays strict")
+    check("row_options" not in cols["Include"], "one list for the whole column: no row_options")
+    js = (ROOT / "kit" / "gc_ui.js").read_text(encoding="utf-8")
+    check("row_options" in js and "datalist" in js and "option_sets" in js, "the editor uses row_options and offers free lists as suggestions (datalist)")
+
+
 if __name__ == "__main__":
-    for t in (test_tokens, test_js, test_glossary, test_server, test_vendor):
+    for t in (test_tokens, test_js, test_glossary, test_server, test_row_options, test_vendor):
         print(f"--- {t.__name__}")
         t()
     print(f"\n{len(FAILS)} failure(s)")
