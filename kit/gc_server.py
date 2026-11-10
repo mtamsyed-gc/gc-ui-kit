@@ -50,7 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.2.0"
+KIT_VERSION = "1.2.1"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
