@@ -415,8 +415,27 @@ def test_row_options():
     check("(c.row_options && r > 0) ? []" in js, "the editor gives rows outside every list no drop-down")
 
 
+# ---------------------------------------------------------------- 1.2.2 one page per port
+def test_port():
+    import socket as so
+    s = so.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    tmp = Path(tempfile.mkdtemp(prefix="gcport_"))
+    client, manifest = make_fake(tmp)
+    hs = []
+    for _ in range(2):
+        ev = threading.Event()
+        threading.Thread(target=GS.serve, args=(manifest, client, port, False), kwargs={"ready": lambda h, e=ev: (hs.append(h), e.set())}, daemon=True).start()
+        ev.wait(5)
+    ports = [h.server_address[1] for h in hs]
+    check(len(ports) == 2 and ports[0] == port and ports[1] != port, f"a second page on a busy port moves to another port ({ports})")
+    check(not GS.ExclusiveServer.allow_reuse_address, "no SO_REUSEADDR (Windows would let two pages share a port)")
+    for h in hs:
+        h.shutdown()
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
-    for t in (test_tokens, test_js, test_glossary, test_server, test_row_options, test_vendor):
+    for t in (test_tokens, test_js, test_glossary, test_server, test_row_options, test_port, test_vendor):
         print(f"--- {t.__name__}")
         t()
     print(f"\n{len(FAILS)} failure(s)")

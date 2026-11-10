@@ -40,6 +40,7 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -1028,15 +1029,29 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"ok": True, "path": t.rel(p)})
 
 
+class ExclusiveServer(ThreadingHTTPServer):
+    """1.2.2: one page per port. http.server sets SO_REUSEADDR, which on Windows lets a second server bind a port another
+    page already listens on: both 'start', and the browser keeps reaching the first one - another client folder's page
+    (found on the laptop: a v9.2.1 page opened the v9.1.0 page of another folder). On Windows the port is taken with
+    SO_EXCLUSIVEADDRUSE, elsewhere without SO_REUSEADDR, so a busy port fails and the next free port is used."""
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def serve(manifest: Path, client: Path, port: int, open_browser: bool, quiet=True, ready=None):
     tool = Tool(manifest, client)
     Handler.tool, Handler.runner, Handler.quiet = tool, Runner(tool), quiet
     threading.Thread(target=tool.warm_meta, daemon=True).start()      # validations of the editable workbooks
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        httpd = ExclusiveServer(("127.0.0.1", port), Handler)
     except OSError:
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        print(f"port {port} is busy: using {httpd.server_address[1]}", flush=True)
+        httpd = ExclusiveServer(("127.0.0.1", 0), Handler)
+        print(f"port {port} is already used by another page (another client folder?): this one uses "
+              f"{httpd.server_address[1]}", flush=True)
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/"
     print(f"{tool.m.get('title', 'GC tool')} page (kit {KIT_VERSION}): {url}", flush=True)
