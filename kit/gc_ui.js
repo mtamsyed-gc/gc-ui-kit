@@ -5,7 +5,7 @@
    glossary and A–Z index, the theme toggle (D-UI3) and the offline fallback. */
 window.GC = (function () {
   "use strict";
-  const KIT = "1.2.0";
+  const KIT = "1.2.1";
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
   const el = (tag, attrs, ...children) => {
@@ -145,14 +145,19 @@ window.GC = (function () {
     return el("div", { class: "cmd" }, code, btns);
   }
   function runButton(actionId, opts) {
-    // opts: label, args (object | fn), confirm {title, body}, primary, onStarted
+    // opts: label, args (object | fn | async fn: a dialog; null = cancelled), confirm {title, body}, primary, onStarted
+    // 1.2.1: the args function is awaited, so a dialog's answers reach the launcher and the run starts only after the
+    // dialog is answered (before 1.2.1 the run started at the click with args {} and Cancel did nothing).
     opts = opts || {};
     const b = el("button", { class: "btn " + (opts.primary ? "primary" : ""), type: "button" }, opts.label || "Run");
     const refresh = () => { b.disabled = offline || running(); b.title = offline ? "Server not running" : running() ? "Another run is in progress" : ""; };
     runListeners.add(refresh); refresh();
     b.addEventListener("click", async () => {
-      const args = typeof opts.args === "function" ? opts.args() : (opts.args || {});
-      if (args === null) return;
+      let args;
+      try { args = typeof opts.args === "function" ? await opts.args() : (opts.args || {}); }
+      catch (e) { toast(e.message || String(e)); return; }
+      if (args === null) return;                       // the dialog was cancelled
+      args = args || {};
       if (opts.confirm) { const ok = await confirm(opts.confirm); if (!ok) return; }
       try {
         const r = await api("/api/run", { action: actionId, args });

@@ -55,6 +55,9 @@ def test_js():
     check("aria-live" in js and "aria-expanded" in js and "role:" in js, "ARIA live region, expanded state and roles present")
     r = subprocess.run(["node", "--check", str(ROOT / "kit" / "gc_ui.js")], capture_output=True, text=True) if shutil.which("node") else None
     check(r is None or r.returncode == 0, "node --check gc_ui.js" + ("" if r is None else (": " + r.stderr.strip()[:200])))
+    # 1.2.1: runButton waits for an async args dialog, sends its answers, and a cancelled dialog starts no run
+    r = subprocess.run(["node", str(ROOT / "tests" / "js_runbutton.js")], capture_output=True, text=True) if shutil.which("node") else None
+    check(r is None or r.returncode == 0, "runButton awaits its dialog" + ("" if r is None else (": " + (r.stdout + r.stderr).strip()[:300])))
 
 
 # ---------------------------------------------------------------- 3. glossary
