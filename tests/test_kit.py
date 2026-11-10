@@ -410,9 +410,9 @@ def test_row_options():
     m2 = GS.Tool.sheet_meta(fake, wb, ws2, {})
     v = m2["columns"][1]
     check(v.get("row_options") == [[3, 3, 0]] and m2["option_sets"] == [["CSV", "Parquet"]], f"a list on one row only: offered on that row only ({v.get('row_options')})")
-    check("(c.row_options && r > 0) ? []" in js, "the editor gives rows outside every list no drop-down")
     js = (ROOT / "kit" / "gc_ui.js").read_text(encoding="utf-8")
     check("row_options" in js and "datalist" in js and "option_sets" in js, "the editor uses row_options and offers free lists as suggestions (datalist)")
+    check("(c.row_options && r > 0) ? []" in js, "the editor gives rows outside every list no drop-down")
 
 
 if __name__ == "__main__":
