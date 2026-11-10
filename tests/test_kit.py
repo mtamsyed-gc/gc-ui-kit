@@ -252,6 +252,17 @@ def test_server():
         check(st == 409 and "changed on disk" in j["error"], "stale mtime refused (409)")
         st, j = s.post("/api/sheet/save", {"id": "book", "sheet": "Settings", "mtime": j0["mtime_ts"], "force": True, "edits": [{"row": 2, "col": 2, "value": "Q"}]})
         check(st == 200, "force save after a conflict")
+        # 1.2.2: an operator picked or typed ('=', '<>') is stored as text, never as a formula, and stays editable
+        st, j1 = s.get("/api/sheet?id=book&sheet=Settings")
+        st, j = s.post("/api/sheet/save", {"id": "book", "sheet": "Settings", "mtime": j1["mtime_ts"], "edits": [{"row": 2, "col": 3, "value": "="}], "appends": [["op", "", "<>", ""]]})
+        wb = load_workbook(client / "02_Inputs" / "Book.xlsx")
+        ws = wb["Settings"]
+        last = ws.max_row
+        check(st == 200 and ws["C2"].value == "=" and ws["C2"].data_type == "s" and ws.cell(last, 3).value == "<>", f"'=' saved as text, not a formula ({ws['C2'].value!r}, {ws['C2'].data_type})")
+        wb.close()
+        st, j1 = s.get("/api/sheet?id=book&sheet=Settings")
+        st, j = s.post("/api/sheet/save", {"id": "book", "sheet": "Settings", "mtime": j1["mtime_ts"], "edits": [{"row": 2, "col": 3, "value": "=<"}]})
+        check(st == 200, f"a cell holding '=' as text is edited again ({j})")
         st, j = s.post("/api/sheet/save", {"id": "book", "sheet": "Ref", "mtime": None, "edits": [{"row": 2, "col": 1, "value": "Q"}]})
         check(st == 400 and "read-only" in j["error"], "read-only sheet refused")
         lock = client / "02_Inputs" / "~$Book.xlsx"
@@ -262,7 +273,7 @@ def test_server():
         check(j["workbooks"]["book"]["in_use"], "state shows the workbook in use")
         lock.unlink()
         baks = list((client / "02_Inputs" / "_ui_backup").glob("Book_*.xlsx"))
-        check(len(baks) == 2, f"two backups kept ({len(baks)})")
+        check(len(baks) == 4, f"one backup per save: four kept ({len(baks)})")
         nb = len(baks)
         # open
         st, j = s.post("/api/open", {"path": "02_Inputs/Book.xlsx"})

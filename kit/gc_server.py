@@ -124,6 +124,14 @@ def cell_value(v):
     return v
 
 
+def _as_text(cell):
+    """1.2.2: a value typed or picked in the page is never a formula. openpyxl turns any text starting with '=' into a
+    formula, so an operator picked from a list ('=', '=<' ...; Merit's Scope rules) became a broken formula that the
+    page then refused to edit; keep such values as text, as Excel does for a value picked from a validation list."""
+    if isinstance(cell.value, str) and cell.value.startswith("="):
+        cell.data_type = "s"
+
+
 def typed(text, old):
     """A value typed in the page, as the cell should hold it: blank = empty; numbers stay numbers; dates as dates."""
     if text is None:
@@ -334,7 +342,7 @@ class Tool:
             fill = fill if isinstance(fill, str) else None
             hfill = (hc.fill.fgColor.rgb if hc.fill is not None and hc.fill.fgColor is not None else None)
             hfill = hfill if isinstance(hfill, str) else None
-            formula = isinstance(c.value, str) and c.value.startswith("=")
+            formula = c.data_type == "f"                 # 1.2.2: a text cell that starts with "=" (an operator) is not a formula
             # yellow data cell = an input; a red header, a red data cell or a formula = a check / computed column
             kind = "input" if fill in INPUT_FILLS else "optional" if fill in OPTIONAL_FILLS else \
                 "check" if (fill in CHECK_FILLS or hfill in CHECK_FILLS or formula) else "text"
@@ -491,9 +499,10 @@ class Tool:
             if c in locked:
                 raise ValueError(f"column {meta['columns'][c - 1]['name']} is not editable")
             cell = ws.cell(row=r, column=c)
-            if isinstance(cell.value, str) and cell.value.startswith("="):
+            if cell.data_type == "f":
                 raise ValueError(f"row {r}, {meta['columns'][c - 1]['name']} holds a formula: not edited from the page")
             cell.value = typed(e.get("value"), cell.value)
+            _as_text(cell)
             changed += 1
         last = ws.max_row or hr
         for row in appends:
@@ -503,6 +512,7 @@ class Tool:
                     continue
                 src = ws.cell(row=hr + 1, column=c)        # the first data row's style carries to a new row
                 cell = ws.cell(row=last, column=c, value=typed(v, None))
+                _as_text(cell)
                 try:
                     cell._style = src._style  # noqa: SLF001
                 except Exception:  # noqa: BLE001
