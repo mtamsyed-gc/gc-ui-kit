@@ -55,6 +55,13 @@ def test_js():
     check("aria-live" in js and "aria-expanded" in js and "role:" in js, "ARIA live region, expanded state and roles present")
     r = subprocess.run(["node", "--check", str(ROOT / "kit" / "gc_ui.js")], capture_output=True, text=True) if shutil.which("node") else None
     check(r is None or r.returncode == 0, "node --check gc_ui.js" + ("" if r is None else (": " + r.stderr.strip()[:200])))
+    # 1.2.1: VERSION, the page's KIT and the server's KIT_VERSION are one number (a tool test compares them)
+    ver = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    srv = (ROOT / "kit" / "gc_server.py").read_text(encoding="utf-8")
+    check(f'const KIT = "{ver}"' in js and f'KIT_VERSION = "{ver}"' in srv, f"VERSION {ver} = gc_ui.js KIT = gc_server.py KIT_VERSION")
+    # 1.2.1: runButton waits for an async args dialog, sends its answers, and a cancelled dialog starts no run
+    r = subprocess.run(["node", str(ROOT / "tests" / "js_runbutton.js")], capture_output=True, text=True) if shutil.which("node") else None
+    check(r is None or r.returncode == 0, "runButton awaits its dialog" + ("" if r is None else (": " + (r.stdout + r.stderr).strip()[:300])))
 
 
 # ---------------------------------------------------------------- 3. glossary
@@ -245,6 +252,17 @@ def test_server():
         check(st == 409 and "changed on disk" in j["error"], "stale mtime refused (409)")
         st, j = s.post("/api/sheet/save", {"id": "book", "sheet": "Settings", "mtime": j0["mtime_ts"], "force": True, "edits": [{"row": 2, "col": 2, "value": "Q"}]})
         check(st == 200, "force save after a conflict")
+        # 1.2.2: an operator picked or typed ('=', '<>') is stored as text, never as a formula, and stays editable
+        st, j1 = s.get("/api/sheet?id=book&sheet=Settings")
+        st, j = s.post("/api/sheet/save", {"id": "book", "sheet": "Settings", "mtime": j1["mtime_ts"], "edits": [{"row": 2, "col": 3, "value": "="}], "appends": [["op", "", "<>", ""]]})
+        wb = load_workbook(client / "02_Inputs" / "Book.xlsx")
+        ws = wb["Settings"]
+        last = ws.max_row
+        check(st == 200 and ws["C2"].value == "=" and ws["C2"].data_type == "s" and ws.cell(last, 3).value == "<>", f"'=' saved as text, not a formula ({ws['C2'].value!r}, {ws['C2'].data_type})")
+        wb.close()
+        st, j1 = s.get("/api/sheet?id=book&sheet=Settings")
+        st, j = s.post("/api/sheet/save", {"id": "book", "sheet": "Settings", "mtime": j1["mtime_ts"], "edits": [{"row": 2, "col": 3, "value": "=<"}]})
+        check(st == 200, f"a cell holding '=' as text is edited again ({j})")
         st, j = s.post("/api/sheet/save", {"id": "book", "sheet": "Ref", "mtime": None, "edits": [{"row": 2, "col": 1, "value": "Q"}]})
         check(st == 400 and "read-only" in j["error"], "read-only sheet refused")
         lock = client / "02_Inputs" / "~$Book.xlsx"
@@ -255,7 +273,7 @@ def test_server():
         check(j["workbooks"]["book"]["in_use"], "state shows the workbook in use")
         lock.unlink()
         baks = list((client / "02_Inputs" / "_ui_backup").glob("Book_*.xlsx"))
-        check(len(baks) == 2, f"two backups kept ({len(baks)})")
+        check(len(baks) == 4, f"one backup per save: four kept ({len(baks)})")
         nb = len(baks)
         # open
         st, j = s.post("/api/open", {"path": "02_Inputs/Book.xlsx"})
@@ -265,6 +283,10 @@ def test_server():
         (client / "out" / "run.cmd").write_text("x")
         st, j = s.post("/api/open", {"path": "out/run.cmd"})
         check(st == 403, "open a script refused")
+        st, j = s.post("/api/open", {"path": "."})
+        check(st == 200 and j["ok"], f"open the client folder itself ('.', 1.2.2) ({j})")
+        st, j = s.post("/api/open", {"path": "./secret/x.csv"})
+        check(st == 404, "a file under the client root but outside the roots still refused")
         # lenai
         st, j = s.post("/api/lenai", {"id": "map"})
         check(st == 200 and j["attached"] == ["Book.xlsx"] and j["missing"] == ["01_Info/none.csv"], f"lenai folder prepared ({j})")
@@ -355,8 +377,76 @@ def test_vendor():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- 1.2.2 per-row lists and lists Excel lets you type past
+def test_row_options():
+    from openpyxl import Workbook
+    from openpyxl.worksheet.datavalidation import DataValidation
+    import types
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cols"
+    ref = wb.create_sheet("_lists")
+    for i, v in enumerate(["P1", "P2"], 1):
+        ref.cell(i, 1, v)
+    for i, v in enumerate(["C1", "C2", "C3"], 1):
+        ref.cell(i, 2, v)
+    ws.append(["Raw", "Mapped", "Include"])
+    for i in range(6):
+        ws.append([f"r{i}", None, "Y"])
+    a = DataValidation(type="list", formula1="=_lists!$A$1:$A$2", showErrorMessage=False)
+    a.add("B2:B4")
+    b = DataValidation(type="list", formula1="=_lists!$B$1:$B$3", showErrorMessage=False)
+    b.add("B5:B7")
+    c = DataValidation(type="list", formula1='"Y,N"', showErrorMessage=True)
+    c.add("C2:C7")
+    w = DataValidation(type="list", formula1='"Q"', showErrorMessage=True, errorStyle="warning")
+    w.add("A2:A7")
+    for v in (a, b, c, w):
+        ws.add_data_validation(v)
+    fake = types.SimpleNamespace(_dv_options=lambda wb_, ws_, f: GS.Tool._dv_options(None, wb_, ws_, f))
+    m = GS.Tool.sheet_meta(fake, wb, ws, {})
+    cols = {c_["name"]: c_ for c_ in m["columns"]}
+    ro = cols["Mapped"].get("row_options")
+    check(ro == [[2, 4, 0], [5, 7, 1]] and m["option_sets"] == [["P1", "P2"], ["C1", "C2", "C3"]], f"per-row lists: row_options and option_sets ({ro}, {m['option_sets']})")
+    check(cols["Mapped"]["options"] == ["P1", "P2"], "column options = the first list (as before)")
+    check(cols["Mapped"].get("free") and not cols["Include"].get("free") and cols["Raw"].get("free"), "free = Excel accepts a typed value (no alert, or a warning alert); a stop alert stays strict")
+    check("row_options" not in cols["Include"], "one list for the whole column: no row_options")
+    ws2 = wb.create_sheet("KV")
+    ws2.append(["Setting", "Value"])
+    for k in ("Version", "Collated input", "Valuation date"):
+        ws2.append([k, None])
+    one = DataValidation(type="list", formula1='"CSV,Parquet"', showErrorMessage=True)
+    one.add("B3")
+    ws2.add_data_validation(one)
+    m2 = GS.Tool.sheet_meta(fake, wb, ws2, {})
+    v = m2["columns"][1]
+    check(v.get("row_options") == [[3, 3, 0]] and m2["option_sets"] == [["CSV", "Parquet"]], f"a list on one row only: offered on that row only ({v.get('row_options')})")
+    js = (ROOT / "kit" / "gc_ui.js").read_text(encoding="utf-8")
+    check("row_options" in js and "datalist" in js and "option_sets" in js, "the editor uses row_options and offers free lists as suggestions (datalist)")
+    check("(c.row_options && r > 0) ? []" in js, "the editor gives rows outside every list no drop-down")
+
+
+# ---------------------------------------------------------------- 1.2.2 one page per port
+def test_port():
+    import socket as so
+    s = so.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    tmp = Path(tempfile.mkdtemp(prefix="gcport_"))
+    client, manifest = make_fake(tmp)
+    hs = []
+    for _ in range(2):
+        ev = threading.Event()
+        threading.Thread(target=GS.serve, args=(manifest, client, port, False), kwargs={"ready": lambda h, e=ev: (hs.append(h), e.set())}, daemon=True).start()
+        ev.wait(5)
+    ports = [h.server_address[1] for h in hs]
+    check(len(ports) == 2 and ports[0] == port and ports[1] != port, f"a second page on a busy port moves to another port ({ports})")
+    check(not GS.ExclusiveServer.allow_reuse_address, "no SO_REUSEADDR (Windows would let two pages share a port)")
+    for h in hs:
+        h.shutdown()
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
-    for t in (test_tokens, test_js, test_glossary, test_server, test_vendor):
+    for t in (test_tokens, test_js, test_glossary, test_server, test_row_options, test_port, test_vendor):
         print(f"--- {t.__name__}")
         t()
     print(f"\n{len(FAILS)} failure(s)")

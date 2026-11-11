@@ -40,6 +40,7 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -50,7 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.2.0"
+KIT_VERSION = "1.2.2"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -121,6 +122,14 @@ def cell_value(v):
     if isinstance(v, float) and v.is_integer() and abs(v) < 1e15:
         return int(v)
     return v
+
+
+def _as_text(cell):
+    """1.2.2: a value typed or picked in the page is never a formula. openpyxl turns any text starting with '=' into a
+    formula, so an operator picked from a list ('=', '=<' ...; Merit's Scope rules) became a broken formula that the
+    page then refused to edit; keep such values as text, as Excel does for a value picked from a validation list."""
+    if isinstance(cell.value, str) and cell.value.startswith("="):
+        cell.data_type = "s"
 
 
 def typed(text, old):
@@ -280,23 +289,51 @@ class Tool:
             head.pop()
         ncol = len(head)
         cols = []
-        # data validations: list options per column (A1 ranges of the sheet, "A,B,C" literals, or a range elsewhere)
-        dv_opts = {}
+        # data validations: list options per column (A1 ranges of the sheet, "A,B,C" literals, or a range elsewhere).
+        # 1.2.2: a column whose rows carry different lists (Merit's Columns tab: the premium list on premium rows, the
+        # claims list on claims rows) gets row_options = [[first row, last row, set index]] into option_sets; and a
+        # validation Excel lets the user type past (no error alert, or a warning / information alert) marks the
+        # column free: the page then offers the list as suggestions and accepts any typed value, as Excel does.
+        dv_rng = {}                               # col -> [(r1, r2, opts)]
+        dv_free = set()
         try:
             for dv in ws.data_validations.dataValidation:
                 if dv.type != "list" or not dv.formula1:
                     continue
                 opts = self._dv_options(wb, ws, dv.formula1)
+                free = (not dv.showErrorMessage) or (dv.errorStyle in ("warning", "information"))
                 for rng in str(dv.sqref).split():
                     m = re.match(r"\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?", rng)
                     if not m:
                         continue
                     c1 = _col_index(m.group(1))
                     c2 = _col_index(m.group(3)) if m.group(3) else c1
+                    r1 = int(m.group(2))
+                    r2 = int(m.group(4)) if m.group(4) else r1
                     for ci in range(c1, c2 + 1):
-                        dv_opts.setdefault(ci, opts)
+                        dv_rng.setdefault(ci, []).append((r1, r2, opts))
+                        if free:
+                            dv_free.add(ci)
         except Exception:  # noqa: BLE001 - validations are help, never a reason to fail
             pass
+        dv_opts, dv_rows, sets = {}, {}, []
+        for ci, rs in dv_rng.items():
+            distinct = []
+            for _, _, o in rs:
+                if o not in distinct:
+                    distinct.append(o)
+            dv_opts[ci] = distinct[0]                # the first list, as before 1.2.2 (a column with one list)
+            # a list that covers only some rows (Merit's Run settings: CSV / Parquet on one key's row) must not be
+            # offered on the others: rows outside every range then get no list (free typing)
+            last = max(ws.max_row or 0, header_row + 1)
+            covered = all(any(r1 <= r <= r2 for r1, r2, _ in rs) for r in range(header_row + 1, last + 1))
+            if len(distinct) > 1 or not covered:
+                rows_ = []
+                for r1, r2, o in sorted(rs, key=lambda x: x[0]):
+                    if o not in sets:
+                        sets.append(o)
+                    rows_.append([r1, r2, sets.index(o)])
+                dv_rows[ci] = rows_
         first = header_row + 1
         for i, name in enumerate(head, 1):
             c = ws.cell(row=first, column=i)
@@ -305,16 +342,21 @@ class Tool:
             fill = fill if isinstance(fill, str) else None
             hfill = (hc.fill.fgColor.rgb if hc.fill is not None and hc.fill.fgColor is not None else None)
             hfill = hfill if isinstance(hfill, str) else None
-            formula = isinstance(c.value, str) and c.value.startswith("=")
+            formula = c.data_type == "f"                 # 1.2.2: a text cell that starts with "=" (an operator) is not a formula
             # yellow data cell = an input; a red header, a red data cell or a formula = a check / computed column
             kind = "input" if fill in INPUT_FILLS else "optional" if fill in OPTIONAL_FILLS else \
                 "check" if (fill in CHECK_FILLS or hfill in CHECK_FILLS or formula) else "text"
             note = ""
             if hc.comment is not None:
                 note = str(hc.comment.text or "").strip()
-            cols.append({"name": name, "col": i, "kind": kind, "options": dv_opts.get(i, []), "note": note,
-                         "locked": name in set(w.get("readonly_columns", [])) or kind == "check"})
-        return {"header_row": header_row, "columns": cols, "ncol": ncol}
+            col = {"name": name, "col": i, "kind": kind, "options": dv_opts.get(i, []), "note": note,
+                   "locked": name in set(w.get("readonly_columns", [])) or kind == "check"}
+            if i in dv_rows:
+                col["row_options"] = dv_rows[i]
+            if i in dv_free:
+                col["free"] = True
+            cols.append(col)
+        return {"header_row": header_row, "columns": cols, "ncol": ncol, "option_sets": sets}
 
     def _dv_options(self, wb, ws, formula: str) -> list[str]:
         f = formula.strip()
@@ -413,7 +455,7 @@ class Tool:
         wb.close()
         out = {"id": wid, "sheet": sheet, "path": self.rel(p), "mtime": fmt_t(mtime(p)), "mtime_ts": mtime(p),
                "in_use": file_in_use(p), "readonly": sheet in set(w.get("readonly_sheets", [])),
-               "columns": [dict(c) for c in meta["columns"]], "header_row": hr, "rows": rows, "n_rows": n, "offset": offset,
+               "columns": [dict(c) for c in meta["columns"]], "option_sets": meta.get("option_sets", []), "header_row": hr, "rows": rows, "n_rows": n, "offset": offset,
                "truncated": n > offset + len(rows), "max_row": last}
         pl = self.plugin()
         if pl is not None and hasattr(pl, "sheet_help"):
@@ -457,9 +499,10 @@ class Tool:
             if c in locked:
                 raise ValueError(f"column {meta['columns'][c - 1]['name']} is not editable")
             cell = ws.cell(row=r, column=c)
-            if isinstance(cell.value, str) and cell.value.startswith("="):
+            if cell.data_type == "f":
                 raise ValueError(f"row {r}, {meta['columns'][c - 1]['name']} holds a formula: not edited from the page")
             cell.value = typed(e.get("value"), cell.value)
+            _as_text(cell)
             changed += 1
         last = ws.max_row or hr
         for row in appends:
@@ -469,6 +512,7 @@ class Tool:
                     continue
                 src = ws.cell(row=hr + 1, column=c)        # the first data row's style carries to a new row
                 cell = ws.cell(row=last, column=c, value=typed(v, None))
+                _as_text(cell)
                 try:
                     cell._style = src._style  # noqa: SLF001
                 except Exception:  # noqa: BLE001
@@ -972,6 +1016,8 @@ class Handler(BaseHTTPRequestHandler):
             w, p = t.workbook(b.get("id", ""))
         elif b.get("what") == "state":
             p = t.state_dir
+        elif rel.strip() in (".", "./", ".\\"):
+            p = t.client                     # 1.2.2: the client folder itself (a folder; its files stay root-checked)
         else:
             p = t.safe_rel(rel)
         if p is None or not p.exists():
@@ -993,15 +1039,29 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"ok": True, "path": t.rel(p)})
 
 
+class ExclusiveServer(ThreadingHTTPServer):
+    """1.2.2: one page per port. http.server sets SO_REUSEADDR, which on Windows lets a second server bind a port another
+    page already listens on: both 'start', and the browser keeps reaching the first one - another client folder's page
+    (found on the laptop: a v9.2.1 page opened the v9.1.0 page of another folder). On Windows the port is taken with
+    SO_EXCLUSIVEADDRUSE, elsewhere without SO_REUSEADDR, so a busy port fails and the next free port is used."""
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def serve(manifest: Path, client: Path, port: int, open_browser: bool, quiet=True, ready=None):
     tool = Tool(manifest, client)
     Handler.tool, Handler.runner, Handler.quiet = tool, Runner(tool), quiet
     threading.Thread(target=tool.warm_meta, daemon=True).start()      # validations of the editable workbooks
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        httpd = ExclusiveServer(("127.0.0.1", port), Handler)
     except OSError:
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        print(f"port {port} is busy: using {httpd.server_address[1]}", flush=True)
+        httpd = ExclusiveServer(("127.0.0.1", 0), Handler)
+        print(f"port {port} is already used by another page (another client folder?): this one uses "
+              f"{httpd.server_address[1]}", flush=True)
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/"
     print(f"{tool.m.get('title', 'GC tool')} page (kit {KIT_VERSION}): {url}", flush=True)
