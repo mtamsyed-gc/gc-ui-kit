@@ -150,7 +150,8 @@ window.GC = (function () {
     // dialog is answered (before 1.2.1 the run started at the click with args {} and Cancel did nothing).
     opts = opts || {};
     const b = el("button", { class: "btn " + (opts.primary ? "primary" : ""), type: "button" }, opts.label || "Run");
-    const refresh = () => { b.disabled = offline || running(); b.title = offline ? "Server not running" : running() ? "Another run is in progress" : ""; };
+    // 1.3.0: a button the page has re-rendered away drops its listener (a page that redraws a card on every poll)
+    const refresh = () => { if (b._shown && !b.isConnected) { runListeners.delete(refresh); return; } if (b.isConnected) b._shown = true; b.disabled = offline || running(); b.title = offline ? "Server not running" : running() ? "Another run is in progress" : ""; };
     runListeners.add(refresh); refresh();
     b.addEventListener("click", async () => {
       let args;
@@ -170,7 +171,7 @@ window.GC = (function () {
   }
   function stopButton() {
     const b = el("button", { class: "btn danger sm", type: "button", onclick: async () => { if (await confirm({ title: "Stop the run?", body: "The launcher is terminated; files it was writing may be incomplete. You can run it again." })) { try { await api("/api/stop", {}); toast("Stop requested"); } catch (e) { toast(e.message); } } } }, "Stop");
-    const refresh = () => { b.style.display = running() ? "" : "none"; };
+    const refresh = () => { if (b._shown && !b.isConnected) { runListeners.delete(refresh); return; } if (b.isConnected) b._shown = true; b.style.display = running() ? "" : "none"; };
     runListeners.add(refresh); refresh();
     return b;
   }

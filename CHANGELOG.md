@@ -40,6 +40,7 @@ the new pieces behaves exactly as on 1.2.2).
   filter with pinned rows held; the dot; the slot; the editor's reload cases; widths by drag, across a reload, fit,
   storage blocked, the Note column.
 
+- Run and Stop buttons a page re-renders away drop their listener (a page that redraws a card on every poll no longer accumulates them).
 - Housekeeping: the committed `__pycache__` files are untracked (`.gitignore`).
 
 ### What the other tools gain at their next re-vendor (not re-vendored in this release)
