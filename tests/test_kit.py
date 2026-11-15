@@ -121,6 +121,16 @@ def make_fake(tmp: Path):
     script.write_text("import sys,time,os\nprint('step', sys.argv[1:], 'ENV', os.environ.get('FAKE_CLIENT')); time.sleep(float(sys.argv[1]) if sys.argv[1:] else 0); print('DONE')\nsys.exit(int(sys.argv[2]) if len(sys.argv)>2 else 0)\n")
     (ui / "fake" / "plugin.py").write_text("def state(tool, runner):\n    return {'hello': tool.client.name}\n"
                                            "def api_echo(tool, q):\n    return {'echo': q.get('x')}\n"
+                                           "WRITE_ROUTES = {'notes': '02_Inputs/notes.json', 'evil': 'secret/x.csv', 'nowrite': '02_Inputs/never.json'}\n"
+                                           "def post_notes(tool, body, out):\n"
+                                           "    import json\n"
+                                           "    t = body.get('text', '')\n"
+                                           "    if 'bad' in t: return {'problems': [['S-X1', 'bad text'], ['S-X2', 'second']]}\n"
+                                           "    if 'raise' in t: raise ValueError('raised refusal')\n"
+                                           "    out.write_text(json.dumps({'text': t}), encoding='utf-8')\n"
+                                           "    return {'saved': len(t)}\n"
+                                           "def post_evil(tool, body, out):\n    out.write_text('x')\n    return {}\n"
+                                           "def post_nowrite(tool, body, out):\n    return {}\n"
                                            "def workbooks(tool):\n    return {'disc': {'path': '02_Inputs/Book.xlsx', 'title': 'Discovered'}, 'book': {'path': 'wrong', 'title': 'clash'}, 'bad id!': {'path': 'x'}}\n"
                                            "def sheet_help(tool, wid, sheet, columns):\n"
                                            "    if sheet != 'Settings': return {}\n"
@@ -426,6 +436,63 @@ def test_row_options():
     check("(c.row_options && r > 0) ? []" in js, "the editor gives rows outside every list no drop-down")
 
 
+# ---------------------------------------------------------------- 1.3.0 the plugin write route
+def test_write_route():
+    os.environ["GC_UI_TEST"] = "1"
+    tmp = Path(tempfile.mkdtemp(prefix="gcwr_"))
+    client, manifest = make_fake(tmp)
+    s = Srv(manifest, client)
+    target = client / "02_Inputs" / "notes.json"
+    try:
+        st, j = s.post("/api/plugin/notes", {"mtime": None, "text": "first"})
+        check(st == 200 and j["ok"] and json.loads(target.read_text())["text"] == "first" and j["saved"] == 5 and j["backup"] is None,
+              f"write route: a new file is written through the plugin ({st} {j})")
+        m1 = j["mtime_ts"]
+        st, j = s.post("/api/plugin/notes", {"mtime": m1, "text": "bad one"})
+        check(st == 422 and [p[0] for p in j["problems"]] == ["S-X1", "S-X2"] and json.loads(target.read_text())["text"] == "first",
+              "a refusal (problems) = 422 with every problem; the file is untouched")
+        st, j = s.post("/api/plugin/notes", {"mtime": m1, "text": "raise"})
+        check(st == 422 and "raised refusal" in j["error"] and json.loads(target.read_text())["text"] == "first", "a ValueError in the plugin = a refusal too")
+        check(not list(target.parent.glob("*.ui_tmp*")), "no temporary file is left after a refusal")
+        st, j = s.post("/api/plugin/notes", {"mtime": m1 - 50, "text": "late"})
+        check(st == 409 and "changed on disk" in j["error"] and json.loads(target.read_text())["text"] == "first", "a file changed since the page read it = 409, untouched")
+        st, j = s.post("/api/plugin/notes", {"mtime": None, "text": "late"})
+        check(st == 409, "the page read 'no file' but a file exists now = 409")
+        st, j = s.post("/api/plugin/notes", {"mtime": m1, "text": "second"})
+        bak = list((client / "02_Inputs" / "_ui_backup").glob("notes_*.json"))
+        check(st == 200 and json.loads(target.read_text())["text"] == "second" and j["backup"] and len(bak) == 1 and json.loads(bak[0].read_text())["text"] == "first",
+              "an existing file is backed up to _ui_backup before it is replaced")
+        st, j = s.post("/api/plugin/notes", {"mtime": 1.0, "force": True, "text": "forced"})
+        check(st == 200 and json.loads(target.read_text())["text"] == "forced", "force overwrites a file changed on disk")
+        (client / "02_Inputs" / "~$notes.json").write_text("lock")
+        st, j = s.post("/api/plugin/notes", {"text": "locked"})
+        check(st == 409 and "open in Excel" in j["error"] and json.loads(target.read_text())["text"] == "forced", "a file Excel holds = 409, untouched")
+        (client / "02_Inputs" / "~$notes.json").unlink()
+        st, j = s.post("/api/plugin/evil", {"text": "x"})
+        check(st == 400 and (client / "secret" / "x.csv").read_text() == "a,b\n1,2\n", "a route that writes outside the allowed roots is refused")
+        st, j = s.post("/api/plugin/nope", {})
+        check(st == 404, "an undeclared route = 404")
+        st, j = s.post("/api/plugin/state", {})
+        check(st == 404, "a plugin function that is not declared in WRITE_ROUTES is never called by POST")
+        st, j = s.post("/api/plugin/nowrite", {})
+        check(st == 500 and not (client / "02_Inputs" / "never.json").exists(), "a route that writes nothing is an error, no file appears")
+        log = (client / "ui_state" / "ui_actions.log").read_text(encoding="utf-8")
+        check("plugin notes: wrote 02_Inputs/notes.json" in log and "plugin notes: refused, 2 problem(s)" in log, "writes and refusals are in ui_actions.log")
+        js = (ROOT / "kit" / "gc_ui.js").read_text(encoding="utf-8")
+        check("e.data = j" in js, "api() hands the reply (problems) to the page with the error")
+    finally:
+        s.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- 1.3.0 the browser components (Playwright; skips without)
+def test_browser():
+    r = subprocess.run([sys.executable, str(ROOT / "tests" / "test_kit_browser.py")], capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip()
+    print("\n".join("    " + ln for ln in out.splitlines()[-60:]))
+    check(r.returncode == 0, "browser components (sortable, status dot, thumbnail slot, editor reload and column widths)")
+
+
 # ---------------------------------------------------------------- 1.2.2 one page per port
 def test_port():
     import socket as so
@@ -446,7 +513,7 @@ def test_port():
 
 
 if __name__ == "__main__":
-    for t in (test_tokens, test_js, test_glossary, test_server, test_row_options, test_port, test_vendor):
+    for t in (test_tokens, test_js, test_glossary, test_server, test_write_route, test_row_options, test_port, test_vendor, test_browser):
         print(f"--- {t.__name__}")
         t()
     print(f"\n{len(FAILS)} failure(s)")
