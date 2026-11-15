@@ -1,11 +1,11 @@
-/* GC UI kit 1.0.0 — shared behaviour for GC tool pages (UI_STANDARD §3–§10). No framework.
+/* GC UI kit 1.3.0 — shared behaviour for GC tool pages (UI_STANDARD §3–§10). No framework.
    A tool page describes its sections; the kit builds the shell (header, index, status bar), polls /api/state, and
    provides the standard components: cards, pills, tables, log viewer, command cards, action buttons, the workbook
    editor (D-UI6), LenAI prompt cards (D-UI4), file lists, banners, dialogs, toasts, search (Ctrl+K), the help panel,
    glossary and A–Z index, the theme toggle (D-UI3) and the offline fallback. */
 window.GC = (function () {
   "use strict";
-  const KIT = "1.2.2";
+  const KIT = "1.3.0";
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
   const el = (tag, attrs, ...children) => {
@@ -35,7 +35,7 @@ window.GC = (function () {
   async function api(path, body, opts) {
     const r = await fetch(path, body !== undefined ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
     const j = await r.json().catch(() => ({ error: "bad reply" }));
-    if (!r.ok || j.error) { const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
+    if (!r.ok || j.error) { const e = new Error(j.error || r.statusText); e.status = r.status; e.data = j; throw e; }   // 1.3.0: e.data = the reply (a write route's problems)
     return j;
   }
 
@@ -210,6 +210,95 @@ window.GC = (function () {
       f.exists && f.open !== false ? openBtn(f.path, "Open") : null)));
   }
 
+  // ---- 1.3.0: status dot with its reasons (UI_STANDARD §6 vocabulary, words for a page's fitness of data)
+  const DOT = { ok: "Usable", flag: "Caveats", stop: "No data", none: "Not assessed" };
+  function statusDot(status, reasons, label) {
+    // status ok | flag | stop | none; reasons: [text] (the tooltip and the screen-reader text); label: what is rated
+    const s = DOT[status] ? status : "none";
+    const rs = (Array.isArray(reasons) ? reasons : reasons ? [reasons] : []).filter(Boolean);
+    const txt = DOT[s] + (rs.length ? ": " + rs.join("; ") : "");
+    return el("span", { class: "dot s-" + s, role: "img", tabindex: "0", "aria-label": (label ? label + " — " : "") + txt, title: [DOT[s], ...rs].join("\n"), dataset: { status: s } });
+  }
+
+  // ---- 1.3.0: thumbnail slot (an empty placeholder until a tool supplies the image)
+  function thumbSlot(src, alt) {
+    return src ? el("div", { class: "thumb" }, el("img", { src, alt: alt || "", loading: "lazy" }))
+      : el("div", { class: "thumb empty", role: "img", "aria-label": (alt ? alt + ": " : "") + "no preview yet" }, el("span", { "aria-hidden": "true" }, "no preview"));
+  }
+
+  // ---- 1.3.0: sortable list: drag a row, or its ▲ / ▼ buttons (keyboard: Tab to a button, or Alt+↑ / Alt+↓ on a row).
+  // Pinned rows (item.pinned) never move, are never a drop target and cannot be removed: a move only re-orders the free
+  // rows among the free positions, so every pinned row keeps its index.
+  function sortable(opts) {
+    // opts: items [{id, pinned, ...}], render(item) -> nodes, label (aria), visible(item) -> bool (a filter: ▲ / ▼ step
+    // over hidden rows), removable (bool), onChange(items, {id, from, to, removed}), itemLabel(item) -> text
+    opts = opts || {};
+    let items = (opts.items || []).slice();
+    const list = el("ol", { class: "sortable", "aria-label": opts.label || "Ordered list" });
+    let dragId = null;
+    const vis = (it) => !opts.visible || opts.visible(it);
+    const name = (it) => (opts.itemLabel ? opts.itemLabel(it) : String(it.label || it.id));
+    const freeIx = () => items.map((it, i) => (it.pinned ? -1 : i)).filter((i) => i >= 0);
+    function moveFree(id, toId, after) {
+      // move the free item id to the place of the free item toId (before it, or after it)
+      const slots = freeIx(); const free = slots.map((i) => items[i]);
+      const a = free.findIndex((x) => x.id === id); let b = free.findIndex((x) => x.id === toId);
+      if (a < 0 || b < 0 || a === b) return false;
+      const [it] = free.splice(a, 1);
+      b = free.findIndex((x) => x.id === toId) + (after ? 1 : 0);
+      free.splice(b, 0, it);
+      const from = items.findIndex((x) => x.id === id);
+      slots.forEach((ix, k) => { items[ix] = free[k]; });
+      const to = items.findIndex((x) => x.id === id);
+      if (from === to) return false;
+      render(); if (opts.onChange) opts.onChange(items.slice(), { id, from, to });
+      announce(name(it) + " moved to position " + (to + 1));
+      return true;
+    }
+    function step(id, dir) {
+      const free = freeIx().map((i) => items[i]).filter(vis);
+      const k = free.findIndex((x) => x.id === id), n = free[k + dir];
+      if (k < 0 || !n) return false;
+      const ok = moveFree(id, n.id, dir > 0);
+      if (ok) { const b = list.querySelector('li[data-id="' + CSS.escape(id) + '"] .' + (dir < 0 ? "up" : "down")); if (b && !b.disabled) b.focus(); else { const r = list.querySelector('li[data-id="' + CSS.escape(id) + '"]'); if (r) r.focus(); } }
+      return ok;
+    }
+    function remove(id) {
+      const i = items.findIndex((x) => x.id === id);
+      if (i < 0 || items[i].pinned) return false;
+      const [it] = items.splice(i, 1); render(); if (opts.onChange) opts.onChange(items.slice(), { id, from: i, removed: true });
+      announce(name(it) + " removed"); return true;
+    }
+    function render() {
+      const free = freeIx().map((i) => items[i]).filter(vis);
+      list.replaceChildren(...items.map((it) => {
+        const k = free.indexOf(it);
+        const li = el("li", { class: "srow" + (it.pinned ? " pinned" : ""), dataset: { id: it.id }, draggable: it.pinned ? null : "true", tabindex: "-1", hidden: vis(it) ? null : true, "aria-label": name(it) + (it.pinned ? " (fixed place)" : "") });
+        const handle = it.pinned ? el("span", { class: "grip pin", title: "Fixed place: cannot be moved or removed", "aria-hidden": "true" }, "📌")
+          : el("span", { class: "grip", title: "Drag to reorder", "aria-hidden": "true" }, "⠿");
+        const up = it.pinned ? null : el("button", { class: "btn sm up", type: "button", "aria-label": "Move " + name(it) + " up", title: "Move up", disabled: k <= 0, onclick: () => step(it.id, -1) }, "▲");
+        const down = it.pinned ? null : el("button", { class: "btn sm down", type: "button", "aria-label": "Move " + name(it) + " down", title: "Move down", disabled: k < 0 || k >= free.length - 1, onclick: () => step(it.id, 1) }, "▼");
+        const del = opts.removable && !it.pinned ? el("button", { class: "btn sm del", type: "button", "aria-label": "Remove " + name(it), title: "Remove", onclick: () => remove(it.id) }, "✕") : null;
+        li.append(handle, el("div", { class: "sbody" }, opts.render ? opts.render(it) : name(it)), el("span", { class: "sbtns" }, up, down, del));
+        if (!it.pinned) {
+          li.addEventListener("dragstart", (e) => { dragId = it.id; li.classList.add("dragging"); try { e.dataTransfer.setData("text/plain", it.id); e.dataTransfer.effectAllowed = "move"; } catch (x) { /* old browsers */ } });
+          li.addEventListener("dragend", () => { dragId = null; li.classList.remove("dragging"); $$(".over-before, .over-after", list).forEach((x) => x.classList.remove("over-before", "over-after")); });
+          li.addEventListener("dragover", (e) => { if (!dragId || dragId === it.id) return; e.preventDefault(); const r = li.getBoundingClientRect(); const after = e.clientY > r.top + r.height / 2; li.classList.toggle("over-after", after); li.classList.toggle("over-before", !after); });
+          li.addEventListener("dragleave", () => li.classList.remove("over-before", "over-after"));
+          li.addEventListener("drop", (e) => { e.preventDefault(); const r = li.getBoundingClientRect(); const after = e.clientY > r.top + r.height / 2; const id = dragId || (e.dataTransfer && e.dataTransfer.getData("text/plain")); li.classList.remove("over-before", "over-after"); if (id && id !== it.id) moveFree(id, it.id, after); });
+          li.addEventListener("keydown", (e) => { if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); step(it.id, e.key === "ArrowUp" ? -1 : 1); } });
+        }
+        return li;
+      }));
+    }
+    render();
+    list.items = () => items.slice();
+    list.setItems = (xs) => { items = xs.slice(); render(); };
+    list.refresh = render;
+    list.move = step; list.moveTo = moveFree; list.remove = remove;
+    return list;
+  }
+
   // ---- dialogs (never window.alert / confirm)
   function confirm(opts) {
     return new Promise((resolve) => {
@@ -249,6 +338,7 @@ window.GC = (function () {
   }
 
   // ---- workbook editor (D-UI6)
+  const memW = {};                       // 1.3.0: column widths set in this page (per workbook x sheet), beside storage
   function editor(wid, opts) {
     opts = opts || {};
     const box = el("div", { class: "editor" });
@@ -257,6 +347,10 @@ window.GC = (function () {
     const grid = el("div", {});
     const msg = el("div", {});
     let info = null, cur = null, sheetData = null, edits = new Map(), appends = [];
+    let seen = null;                     // 1.3.0 (0BO 1): {exists, mtime} of the file as the editor last read it
+    const edId = "ed-" + String(wid).replace(/[^\w-]/g, "_");
+    const colStyle = el("style", {});    // 1.3.0 (0BO 2): the widths of this editor's columns
+    box.dataset.ed = edId;
     const lists = el("div", { hidden: true });                      // 1.2.2: one <datalist> per distinct option list
     const listIds = new Map();
     const listId = (options) => { const k = options.join("\u0001"); if (!listIds.has(k)) { const id = "dl-" + wid + "-" + listIds.size; listIds.set(k, id); lists.append(el("datalist", { id }, options.map((o) => el("option", { value: o })))); } return listIds.get(k); };
@@ -267,17 +361,23 @@ window.GC = (function () {
     const addBtn = el("button", { class: "btn sm", type: "button", onclick: () => { appends.push(new Array(sheetData.columns.length).fill("")); render(); } }, "Add row");
     const excelBtn = openBtn(null, "Open in Excel", { what: "workbook", id: wid });
     const reloadBtn = el("button", { class: "btn sm", type: "button", onclick: () => load() }, "Reload");
+    const reloadNow = () => el("button", { class: "btn sm", type: "button", onclick: () => { edits.clear(); appends = []; load(); } }, "Reload");
     const lockBanner = el("div", {});
     const legend = el("div", { class: "legend" }, el("span", {}, el("span", { class: "sw input" }), "required input"), el("span", {}, el("span", { class: "sw optional" }), "optional input"), el("span", {}, el("span", { class: "sw check" }), "check / computed (read-only)"), el("span", {}, el("span", { class: "sw changed" }), "changed, not saved"));
     const pager = el("div", { class: "gc-row small muted" });
     bar.append(q, saveBtn, discardBtn, addBtn, excelBtn, reloadBtn, dirtyLbl);
-    box.append(lockBanner, tabs, bar, msg, grid, pager, legend, lists);
+    box.append(colStyle, lockBanner, tabs, bar, msg, grid, pager, legend, lists);
     const dirty = () => edits.size + appends.length;
     const refreshDirty = () => { dirtyLbl.textContent = dirty() ? dirty() + " unsaved change" + (dirty() > 1 ? "s" : "") : ""; saveBtn.disabled = !dirty() || (sheetData && sheetData.readonly); discardBtn.disabled = !dirty(); };
     async function load() {
+      // 1.3.0 (0BO 1): a missing file or a read error keeps the toolbar (Reload) and says so in the message area; the
+      // page's poller calls box.watch() and the body reloads by itself once the file is written
       try { info = await api("/api/workbook?id=" + encodeURIComponent(wid)); }
-      catch (e) { box.replaceChildren(banner("stop", e.message)); return; }
-      if (!info.exists) { box.replaceChildren(banner("flag", info.path + " does not exist yet.")); return; }
+      catch (e) { seen = { exists: null, mtime: null }; tabs.replaceChildren(); grid.replaceChildren(); pager.replaceChildren(); msg.replaceChildren(banner("stop", e.message, el("div", { class: "gc-row" }, reloadNow()))); return; }
+      seen = { exists: !!info.exists, mtime: info.mtime || null };
+      if (!info.exists) { sheetData = null; edits.clear(); appends = []; tabs.replaceChildren(); grid.replaceChildren(); pager.replaceChildren(); lockBanner.replaceChildren(el("span")); msg.replaceChildren(banner("flag", info.path + " does not exist yet. It appears here once the step that writes it has run (or press Reload).", el("div", { class: "gc-row", style: "margin-top:6px" }, reloadNow()))); saveBtn.disabled = true; addBtn.disabled = true; discardBtn.disabled = true; return; }
+      if (cur && !info.sheets.some((s) => s.name === cur)) cur = null;
+      msg.replaceChildren();
       tabs.replaceChildren(...info.sheets.map((s) => el("button", { type: "button", role: "tab", class: (s.name === cur ? "on " : "") + (s.readonly ? "ro" : ""), "aria-selected": String(s.name === cur), onclick: () => { if (dirty() && s.name !== cur) { confirm({ title: "Unsaved changes", body: "Switching sheets discards " + dirty() + " unsaved change(s). Save first?", ok: "Discard and switch" }).then((ok) => { if (ok) { edits.clear(); appends = []; loadSheet(s.name, 0); } }); } else loadSheet(s.name, 0); }, title: s.note || "" }, s.name, el("span", { class: "n" }, s.rows))));
       lockBanner.replaceChildren(info.in_use ? banner("flag", info.path.split("/").pop() + " is open in Excel: close it there before saving from the page.") : el("span"));
       if (!cur) cur = (info.sheets.find((s) => !s.readonly) || info.sheets[0] || {}).name;
@@ -297,7 +397,8 @@ window.GC = (function () {
       msg.replaceChildren(d.readonly ? banner("info", "This sheet is read-only in the page (reference data). Open the workbook in Excel to change it.") : d.note ? note(d.note) : el("span"));
       addBtn.disabled = d.readonly; q.disabled = false;
       const colTip = (c) => [c.description || c.note || "", c.required ? "Required." : c.kind === "optional" ? "Optional." : "", c.options && c.options.length ? "Options: " + c.options.join(", ") : "", c.example ? "Example: " + c.example : ""].filter(Boolean).join("\n");
-      const th = el("tr", {}, el("th", { scope: "col" }, "#"), cols.map((c) => el("th", { scope: "col", title: colTip(c) }, c.name, c.kind !== "text" ? el("span", { class: "kind" }, c.kind === "input" ? (c.required === false ? "input" : "input") : c.kind === "optional" ? "optional" : "check") : null, colTip(c) ? el("button", { class: "q", type: "button", title: colTip(c), "aria-label": "Help: " + c.name, onclick: () => panel.open(c.name, el("p", { style: "white-space:pre-wrap" }, colTip(c))) }, "?") : null)));
+      const wrapCol = (c) => /^notes?$/i.test(String(c.name || "").trim());
+      const th = el("tr", {}, el("th", { scope: "col" }, "#"), cols.map((c, ci) => el("th", { scope: "col", title: colTip(c), class: "c" + ci + (wrapCol(c) ? " wrap" : ""), dataset: { col: c.name } }, resizer(ci, c), c.name, c.kind !== "text" ? el("span", { class: "kind" }, c.kind === "input" ? (c.required === false ? "input" : "input") : c.kind === "optional" ? "optional" : "check") : null, colTip(c) ? el("button", { class: "q", type: "button", title: colTip(c), "aria-label": "Help: " + c.name, onclick: () => panel.open(c.name, el("p", { style: "white-space:pre-wrap" }, colTip(c))) }, "?") : null)));
       const RH = d.rows_help || null, keyIx = RH ? cols.findIndex((c) => c.col === d.key_col) : -1;
       const valIxs = RH ? (d.value_cols || [d.value_col]).map((vc) => cols.findIndex((c) => c.col === vc)) : [], valIx = valIxs.length ? valIxs[0] : -1;
       const cell = (r, ci, c, v, isNew, rowVals) => {
@@ -309,19 +410,22 @@ window.GC = (function () {
         const ro = !rh && c.row_options && r > 0 ? c.row_options.find((x) => r >= x[0] && r <= x[1]) : null;
         const options = rh ? (rh.options || []) : ro ? (d.option_sets[ro[2]] || []) : (c.row_options && r > 0) ? [] : c.options;
         const free = !!c.free && !(rh && rh.options && rh.options.length && rh.strict);
-        if (c.locked || d.readonly) return el("td", { class: "cell " + (c.kind === "check" ? "check" : ""), title: String(v ?? "") }, isNum(v) ? fmtNum(v) : (v ?? ""));
+        const cc = " c" + ci + (wrapCol(c) ? " wrap" : "");
+        if (c.locked || d.readonly) return el("td", { class: "cell " + (c.kind === "check" ? "check" : "") + cc, title: String(v ?? "") }, isNum(v) ? fmtNum(v) : (v ?? ""));
         const onchange = (ev) => { const nv = ev.target.value; if (isNew) { appends[-r - 1][ci] = nv; } else if (String(nv) === String(v ?? "")) edits.delete(key); else edits.set(key, nv); ev.target.closest("td").classList.toggle("changed", isNew ? nv !== "" : edits.has(key)); if (rh) ev.target.closest("tr").classList.toggle("need", !!rh.required && nv === ""); refreshDirty(); };
         // 1.2.2: a list Excel lets the user type past (free) = a text box with the list as suggestions, so any value
         // Excel accepts (a value not in the list, "field a; field b") can be typed here too; a strict list = a drop-down
         const dl = options.length && free ? listId(options) : null;
         const inp = options.length && !free ? el("select", { "aria-label": c.name + " row " + r, onchange }, [el("option", { value: "" }, "—"), ...options.map((o) => el("option", { value: o, selected: String(o) === String(cur ?? "") }, o)), ...(cur !== null && cur !== "" && !options.map(String).includes(String(cur)) ? [el("option", { value: String(cur), selected: true }, String(cur) + " (not in list)")] : [])])
+          : wrapCol(c) ? el("textarea", { rows: "2", "aria-label": c.name + " row " + r, onchange, placeholder: c.example ? "e.g. " + c.example : "" }, cur ?? "")
           : el("input", { type: "text", value: cur ?? "", list: dl, autocomplete: "off", "aria-label": c.name + " row " + r, onchange, placeholder: rh && rh.example ? "e.g. " + rh.example : c.example ? "e.g. " + c.example : "" });
         const tipTxt = rh ? [rh.description || "", rh.required ? "Required." : "Optional.", rh.options && rh.options.length ? "Options: " + rh.options.join(", ") : "", rh.unit ? "Unit: " + rh.unit : "", rh.example ? "Example: " + rh.example : "", rh.default !== undefined && rh.default !== "" ? "Default when blank: " + rh.default : ""].filter(Boolean).join("\n") : "";
-        return el("td", { class: "cell " + (c.kind === "input" ? "input " : c.kind === "optional" ? "optional " : "") + (edits.has(key) || (isNew && cur !== "") ? "changed" : ""), title: tipTxt }, inp, rh && ci === valIx ? el("button", { class: "rowq", type: "button", title: tipTxt, "aria-label": "Help: " + rowVals[keyIx], onclick: () => panel.open(String(rowVals[keyIx]), el("p", { style: "white-space:pre-wrap" }, tipTxt)) }, "?") : null);
+        return el("td", { class: "cell " + (c.kind === "input" ? "input " : c.kind === "optional" ? "optional " : "") + (edits.has(key) || (isNew && cur !== "") ? "changed" : "") + cc, title: tipTxt }, inp, rh && ci === valIx ? el("button", { class: "rowq", type: "button", title: tipTxt, "aria-label": "Help: " + rowVals[keyIx], onclick: () => panel.open(String(rowVals[keyIx]), el("p", { style: "white-space:pre-wrap" }, tipTxt)) }, "?") : null);
       };
       const rows = d.rows.map((row) => { const rh = RH && keyIx >= 0 ? RH[String(row.v[keyIx] ?? "")] : null; const need = rh && rh.required && (row.v[valIx] === null || row.v[valIx] === "") && !edits.has(row.r + ":" + d.value_col); return el("tr", { class: need ? "need" : null }, el("td", { class: "num muted" }, row.r), cols.map((c, ci) => cell(row.r, ci, c, row.v[ci], false, row.v))); });
       const news = appends.map((row, k) => el("tr", {}, el("td", { class: "num muted" }, "new"), cols.map((c, ci) => cell(-k - 1, ci, c, row[ci], true, row))));
       grid.replaceChildren(el("div", { class: "tbl-wrap", style: "max-height:520px" }, el("table", { class: "gc" }, el("thead", {}, th), el("tbody", {}, rows, news))));
+      applyWidths();
       const from = d.offset + 1, to = d.offset + d.rows.length;
       pager.replaceChildren(el("span", {}, d.n_rows ? "rows " + from + "–" + to + " of " + d.n_rows : "no rows"), d.offset > 0 ? el("button", { class: "btn sm", type: "button", onclick: () => loadSheet(cur, Math.max(0, d.offset - (opts.limit || 200))) }, "← Previous") : null, d.truncated ? el("button", { class: "btn sm", type: "button", onclick: () => loadSheet(cur, d.offset + d.rows.length) }, "Next →") : null, el("span", { class: "spacer" }), el("span", {}, "saved " + fmtWhen(d.mtime)));
       refreshDirty();
@@ -334,6 +438,7 @@ window.GC = (function () {
         const r = await api("/api/sheet/save", body);
         toast("Saved " + r.changed + " change(s); backup kept");
         edits.clear(); appends = [];
+        if (seen) seen.mtime = r.mtime || seen.mtime;
         if (opts.onSaved) opts.onSaved(r);
         await loadSheet(cur, sheetData.offset);
       } catch (e) {
@@ -342,7 +447,64 @@ window.GC = (function () {
         } else msg.replaceChildren(banner("stop", e.message));
       } finally { saveBtn.replaceChildren("Save"); refreshDirty(); }
     }
-    box.load = load; box.isDirty = dirty;
+    // ---- 1.3.0 (0BO 2): column widths: drag a header's right edge; double-click it = fit the content. Kept per workbook x
+    // sheet in this browser (localStorage, reads and writes guarded: blocked or empty storage = the default widths)
+    const W_MIN = 40, W_MAX = 1200;
+    const wKey = () => "colw." + wid + "." + cur;
+    function widths() {
+      // this page's own copy first (it holds the widths when the browser blocks storage), then the stored ones
+      const w = memW[wKey()] || store.get(wKey(), {});
+      const out = {};
+      if (w && typeof w === "object" && !Array.isArray(w)) for (const [k, v] of Object.entries(w)) if (typeof v === "number" && isFinite(v) && v >= W_MIN && v <= W_MAX) out[k] = Math.round(v);
+      return out;
+    }
+    function applyWidths(live) {
+      const d = sheetData; if (!d) { colStyle.textContent = ""; return; }
+      const w = Object.assign(widths(), live || {});
+      colStyle.textContent = d.columns.map((c, ci) => (w[c.name] ? `[data-ed="${edId}"] table.gc .c${ci} { width: ${w[c.name]}px; min-width: ${w[c.name]}px; max-width: ${w[c.name]}px; }` : "")).join("\n");
+    }
+    function saveWidth(name, px) { const w = widths(); if (px === null) delete w[name]; else w[name] = Math.max(W_MIN, Math.min(W_MAX, Math.round(px))); memW[wKey()] = w; store.set(wKey(), w); applyWidths(); }
+    function fitWidth(ci, c) {
+      // the content's own width: text cells and the header by the extent of their text (a Range), fields by the width
+      // of their value in their font (canvas); then the column takes that width
+      let m = 0;
+      const cv = fitWidth.cv || (fitWidth.cv = document.createElement("canvas")); const g = cv.getContext && cv.getContext("2d");
+      for (const x of $$(".c" + ci, grid)) {
+        const f = x.querySelector("input, select, textarea");
+        if (f && g) { g.font = getComputedStyle(f).font; const t = f.tagName === "SELECT" ? (f.options[f.selectedIndex] || {}).text || "" : f.value || f.placeholder || ""; m = Math.max(m, g.measureText(t).width + 34); continue; }
+        const r = document.createRange(); r.selectNodeContents(x);
+        const rsEl = x.querySelector(".rs"); if (rsEl) r.setStartAfter(rsEl);         // the header's own drag handle is not content
+        const cs = getComputedStyle(x);
+        m = Math.max(m, r.getBoundingClientRect().width + parseFloat(cs.paddingLeft || 0) + parseFloat(cs.paddingRight || 0) + 12);
+      }
+      saveWidth(c.name, Math.max(m, W_MIN));
+      announce(c.name + ": width fitted to the content");
+    }
+    function resizer(ci, c) {
+      const h = el("span", { class: "rs", role: "separator", "aria-orientation": "vertical", "aria-label": "Resize column " + c.name + " (double-click to fit)", title: "Drag to resize; double-click to fit the content", onclick: (e) => e.stopPropagation() });
+      h.addEventListener("pointerdown", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const thEl = h.parentElement, x0 = e.clientX, w0 = thEl.getBoundingClientRect().width;
+        try { h.setPointerCapture(e.pointerId); } catch (x) { /* synthetic events */ }
+        let last = w0;
+        const mv = (ev) => { last = Math.max(W_MIN, Math.min(W_MAX, w0 + ev.clientX - x0)); applyWidths({ [c.name]: Math.round(last) }); };
+        const up = () => { h.removeEventListener("pointermove", mv); h.removeEventListener("pointerup", up); h.removeEventListener("pointercancel", up); if (Math.abs(last - w0) >= 1) saveWidth(c.name, last); };
+        h.addEventListener("pointermove", mv); h.addEventListener("pointerup", up); h.addEventListener("pointercancel", up);
+      });
+      h.addEventListener("dblclick", (e) => { e.preventDefault(); e.stopPropagation(); fitWidth(ci, c); });
+      return h;
+    }
+    // ---- 1.3.0 (0BO 1): the page's poller reports the file's state; an editor that was read reloads by itself when the
+    // file appears, disappears or its modified time changes, unless it holds unsaved edits (then it says so, Reload)
+    function watch(ws) {
+      if (!seen || !ws) return false;                       // never read yet: the page loads it when the card opens
+      const ex = !!ws.exists, mt = ws.mtime || null;
+      if (seen.exists === ex && (seen.mtime || null) === mt) return false;
+      seen = { exists: ex, mtime: mt };
+      if (dirty()) { msg.replaceChildren(banner("flag", (info ? info.path : wid) + " changed on disk since the page read it. Reload to see the file (your " + dirty() + " unsaved change(s) are discarded), or Save to overwrite it.", el("div", { class: "gc-row", style: "margin-top:6px" }, reloadNow()))); return true; }
+      load(); return true;
+    }
+    box.load = load; box.isDirty = dirty; box.watch = watch; box.widths = () => widths();
     return box;
   }
 
@@ -519,6 +681,6 @@ window.GC = (function () {
   }
 
   return { KIT, $, $$, el, esc, api, toast, announce, pill, worst, STATUS, table, tableHead, card, part, note, banner, copyBtn, cmdCard, runButton, stopButton, openBtn,
-    logView, fileList, confirm, prompt, editor, promptCard, md, loadGlossary, glossarySection, indexSection, buildIndex, showTerm, term, tip, showDoc, panel, palette,
+    logView, fileList, statusDot, DOT, thumbSlot, sortable, confirm, prompt, editor, promptCard, md, loadGlossary, glossarySection, indexSection, buildIndex, showTerm, term, tip, showDoc, panel, palette,
     shell, poll, fmtNum, fmtWhen, fmtDur, ago, slug, store, get state() { return state; }, get running() { return running(); }, get glossary() { return glossary; }, get offline() { return offline; } };
 })();

@@ -1,4 +1,4 @@
-"""GC UI kit server 1.1.1 — the local browser server every GC tool page runs on (UI_STANDARD §2).
+"""GC UI kit server 1.3.0 — the local browser server every GC tool page runs on (UI_STANDARD §2).
 
 Standard library only (openpyxl is imported only when a workbook is read or saved). Python 3.12+. Windows first; runs
 on Linux / macOS for tests.
@@ -19,6 +19,9 @@ The page (<ui dir>/<tool>/index.html + <ui dir>/kit) talks to this process on 12
   GET  /api/sheet?id=&sheet=&offset=&limit=&q=   one sheet: header, column help (options, input / check), rows
   GET  /api/glossary                     the merged glossary (kit common + tool)
   GET  /api/plugin/<name>?...            a read-only route the tool plugin defines as api_<name>(tool, query)
+  POST /api/plugin/<name> {mtime, force, ...}   1.3.0: a plugin write route (WRITE_ROUTES + post_<name>): the plugin
+                                         validates and writes a temporary file; the kit checks the lock and the file
+                                         time, keeps a backup and swaps the file in. Refused = 422 with problems
   POST /api/run    {action, args}        start a manifest action (a launcher) — one run at a time, stdin closed
   POST /api/stop                         terminate the running action
   POST /api/open   {path | what}         open a file / folder in its Windows application (allow-listed types only)
@@ -28,7 +31,7 @@ The page (<ui dir>/<tool>/index.html + <ui dir>/kit) talks to this process on 12
 
 Rules (UI_STANDARD §2.4): binds 127.0.0.1; reads and opens only under the manifest's allowed_roots; never deletes;
 writes only the editable workbooks (on Save, after a timestamped backup, refusing when Excel holds the file), the
-LenAI folders and its own state files; every run / open / save / prepare is appended to ui_actions.log.
+files a plugin declares in WRITE_ROUTES (1.3.0; same backup and lock rules), the LenAI folders and its own state files; every run / open / save / prepare is appended to ui_actions.log.
 """
 from __future__ import annotations
 
@@ -51,7 +54,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-KIT_VERSION = "1.2.2"
+KIT_VERSION = "1.3.0"
 MAX_ROWS = 500
 LOG_TAIL = 300
 BACKUPS_KEPT = 10
@@ -521,16 +524,7 @@ class Tool:
         if not changed:
             wb.close()
             return {"ok": True, "changed": 0, "mtime": fmt_t(cur), "mtime_ts": cur}
-        bdir = p.parent / "_ui_backup"
-        bdir.mkdir(exist_ok=True)
-        bak = bdir / f"{p.stem}_{datetime.now():%Y%m%d_%H%M%S_%f}{p.suffix}"
-        shutil.copy2(p, bak)
-        olds = sorted(bdir.glob(f"{p.stem}_*{p.suffix}"))
-        for o in olds[:-BACKUPS_KEPT]:
-            try:
-                o.unlink()                     # the backups are the server's own files (§2.4: never a user file)
-            except OSError:
-                pass
+        bak = backup_file(p)                   # the backups are the server's own files (§2.4: never a user file)
         tmp = p.with_name(p.stem + ".ui_tmp" + p.suffix)
         wb.save(tmp)
         wb.close()
@@ -584,6 +578,80 @@ class Tool:
         (folder / "EXPECTED_RETURN.md").write_text(a.get("expected_return", "A Run Digest (see the LenAI encyclopedia)."),
                                                  encoding="utf-8")
         return {"ok": True, "folder": self.rel(folder), "attached": copied, "missing": missing}
+
+
+def backup_file(p: Path) -> Path:
+    """A timestamped copy of p in <its folder>/_ui_backup, the last BACKUPS_KEPT kept (the server's own files)."""
+    bdir = p.parent / "_ui_backup"
+    bdir.mkdir(exist_ok=True)
+    bak = bdir / f"{p.stem}_{datetime.now():%Y%m%d_%H%M%S_%f}{p.suffix}"
+    shutil.copy2(p, bak)
+    for o in sorted(bdir.glob(f"{p.stem}_*{p.suffix}"))[:-BACKUPS_KEPT]:
+        try:
+            o.unlink()
+        except OSError:
+            pass
+    return bak
+
+
+class Refused(Exception):
+    """A plugin write route refused the request: problems = [[code, message], ...]; nothing was written."""
+
+    def __init__(self, problems):
+        self.problems = [list(p) if isinstance(p, (list, tuple)) else ["", str(p)] for p in problems] or [["", "refused"]]
+        super().__init__(self.problems[0][1])
+
+
+def plugin_write(tool, name: str, body: dict) -> dict:
+    """1.3.0: a plugin write route. The plugin declares WRITE_ROUTES = {name: "relative path"} and defines
+    post_<name>(tool, body, out_path) -> dict, which validates the request and writes the whole new file at out_path
+    (a temporary file beside the target); it refuses by returning {"problems": [[code, message], ...]} or raising
+    Refused / ValueError. The kit, not the plugin, applies the rules every write follows (UI_STANDARD §2.4): the target
+    is inside the allowed roots; a file Excel holds is refused (409); a file changed on disk since the page read it is
+    refused (409) unless force; a backup is kept; the new file replaces the old in one rename. A refusal changes
+    nothing on disk."""
+    pl = tool.plugin()
+    routes = getattr(pl, "WRITE_ROUTES", None) if pl is not None else None
+    fn = getattr(pl, "post_" + name, None) if pl is not None and re.fullmatch(r"\w+", name) else None
+    if not isinstance(routes, dict) or name not in routes or fn is None:
+        raise LookupError(f"no plugin write route {name}")
+    p = tool.safe_rel(str(routes[name]))
+    if p is None:
+        raise ValueError(f"the route {name} writes outside the allowed folders")
+    if p.exists() and file_in_use(p):
+        raise RuntimeError(f"{p.name} is open in Excel: close it there, then save again")
+    cur = mtime(p)
+    if not body.get("force"):
+        seen = body.get("mtime")
+        changed = (seen is None) != (cur is None) or (seen is not None and cur is not None and abs(cur - float(seen)) > 1e-6)
+        if "mtime" in body and changed:
+            raise RuntimeError(f"{p.name} changed on disk since the page read it: reload, then save again"
+                               if cur is not None else f"{p.name} was removed since the page read it: reload, then save again")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.stem + ".ui_tmp" + p.suffix)
+    try:
+        try:
+            res = fn(tool, body, tmp) or {}
+        except Refused:
+            raise
+        except ValueError as e:
+            raise Refused([["", str(e)]]) from e
+        if res.get("problems"):
+            raise Refused(res["problems"])
+        if not tmp.exists():
+            raise OSError(f"the route {name} wrote nothing")
+        bak = backup_file(p) if p.exists() else None
+        os.replace(tmp, p)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    out = {k: v for k, v in res.items() if k != "problems"}
+    out.update({"ok": True, "path": tool.rel(p), "backup": tool.rel(bak) if bak else None,
+                "mtime": fmt_t(mtime(p)), "mtime_ts": mtime(p)})
+    return out
 
 
 def _col_index(letters: str) -> int:
@@ -997,6 +1065,17 @@ class Handler(BaseHTTPRequestHandler):
                 shutil.copy2(p, dst)
                 self.audit(f"copy {t.rel(p)} -> {dst.name}")
                 return self.send_json({"ok": True, "path": t.rel(dst)})
+            if u.path.startswith("/api/plugin/"):
+                name = u.path[len("/api/plugin/"):]
+                try:
+                    res = plugin_write(t, name, b)
+                except LookupError as e:
+                    return self.send_json({"error": str(e)}, 404)
+                except Refused as e:
+                    self.audit(f"plugin {name}: refused, {len(e.problems)} problem(s), nothing written")
+                    return self.send_json({"error": str(e), "problems": e.problems}, 422)
+                self.audit(f"plugin {name}: wrote {res['path']}, backup {res.get('backup')}")
+                return self.send_json(res)
             if u.path == "/api/lenai":
                 res = t.lenai(b.get("id", ""))
                 self.audit(f"lenai {b.get('id')} -> {res['folder']}")
